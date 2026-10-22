@@ -12,7 +12,8 @@ using namespace ps5droid::compat;
 PS5DROID_TEST(fd_table_basic_rw_seek) {
     CompatFdTable table;
     std::string path = "test_fd_table.tmp";
-    int fd = table.open_file(path, 0x200 | 0x400 | 0x2, 0644);
+    // Linux x86_64 O_CREAT|O_TRUNC|O_RDWR values (guest ABI, not host).
+    int fd = table.open_file(path, 0x40 | 0x200 | 0x2, 0644);
     CHECK_MSG(fd >= 3, "open_file failed");
 
     const char* msg = "hello fd_table";
@@ -32,11 +33,41 @@ PS5DROID_TEST(fd_table_basic_rw_seek) {
     CHECK_MSG(st.st_size == static_cast<int64_t>(strlen(msg)), "stat size mismatch");
 
     int dup_fd = table.dup(fd);
-    CHECK_MSG(dup_fd > fd, "dup failed");
+    CHECK_MSG(dup_fd >= 0 && dup_fd != fd, "dup failed");
+
+    // Both descriptors now reference the same entry: a write through the
+    // duplicate must be visible through the original.
+    const char* extra = "!";
+    CHECK_MSG(table.write(dup_fd, extra, 1) == 1, "dup write failed");
+    CHECK_MSG(table.lseek(fd, 0, 2 /*SEEK_END*/) == static_cast<int64_t>(strlen(msg) + 1),
+              "shared file entry after dup");
 
     table.close(fd);
     table.close(dup_fd);
     ps5droid::platform::remove_file(path);
+}
+
+PS5DROID_TEST(fd_table_lowest_free_allocation) {
+    CompatFdTable table;
+    std::string a = "test_fd_alloc_a.tmp";
+    std::string b = "test_fd_alloc_b.tmp";
+    int flags = 0x40 | 0x200 | 0x2; // O_CREAT|O_TRUNC|O_RDWR (Linux)
+    int fd1 = table.open_file(a, flags, 0644);
+    int fd2 = table.open_file(b, flags, 0644);
+    CHECK_MSG(fd1 >= 3 && fd2 == fd1 + 1, "sequential allocation");
+
+    // Linux allocates the lowest free number: closing fd1 makes the next
+    // open return fd1 again, not a fresh high-water mark.
+    CHECK_MSG(table.close(fd1) == 0, "close failed");
+    std::string c = "test_fd_alloc_c.tmp";
+    int fd3 = table.open_file(c, flags, 0644);
+    CHECK_MSG(fd3 == fd1, "lowest free fd must be reused");
+
+    table.close(fd2);
+    table.close(fd3);
+    ps5droid::platform::remove_file(a);
+    ps5droid::platform::remove_file(b);
+    ps5droid::platform::remove_file(c);
 }
 
 PS5DROID_TEST(bionic_loader_hdr_and_stack) {

@@ -29,12 +29,22 @@ PS5DROID_TEST(binder_engine_registration_and_tx) {
 
 PS5DROID_TEST(apk_inspection_basic) {
     std::string path = "test_app.apk";
-    const uint8_t zip_hdr[30] = {'P', 'K', 0x03, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                                 0,   0,   0,    0,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-    ps5droid::platform::write_file(path, zip_hdr, sizeof(zip_hdr));
+    // Local file header (30 bytes) whose file-name field announces an
+    // AndroidManifest.xml entry - enough for the structural probe.
+    std::vector<uint8_t> zip = {'P', 'K', 0x03, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                0,   0,   0,    0,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    const char name[] = "AndroidManifest.xml";
+    zip.insert(zip.end(), name, name + sizeof(name) - 1);
+    ps5droid::platform::write_file(path, zip.data(), zip.size());
 
     ApkInspection apk = inspect_apk(path);
     CHECK_MSG(apk.is_apk, "APK detection failed");
+    CHECK_MSG(apk.has_manifest, "manifest entry must be detected");
+
+    // HONESTY: no package name is fabricated. Binary AXML parsing is not
+    // implemented, so the field stays empty and the note says so.
+    CHECK_MSG(apk.package_name.empty(), "package name must not be fabricated");
+    CHECK_MSG(!apk.package_note.empty(), "missing package name must be explained");
 
     ps5droid::platform::remove_file(path);
 }

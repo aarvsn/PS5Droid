@@ -41,7 +41,10 @@ MapResult CompatMemory::mmap(uintptr_t hint, size_t length, int prot, int flags,
     if (offset != 0) {
         return {nullptr, linux_abi::kEinval, "file-backed mappings are not supported"};
     }
-    if ((flags & linux_abi::kMapAnonymous) == 0 || (flags & linux_abi::kMapShared) != 0) {
+    // Linux requires exactly one of MAP_SHARED / MAP_PRIVATE. Only the
+    // private anonymous flavor is modeled, so MAP_PRIVATE must be present.
+    if ((flags & linux_abi::kMapAnonymous) == 0 || (flags & linux_abi::kMapPrivate) == 0 ||
+        (flags & linux_abi::kMapShared) != 0) {
         return {nullptr, linux_abi::kEinval, "only MAP_PRIVATE|MAP_ANONYMOUS is supported"};
     }
     if ((flags & linux_abi::kMapFixed) != 0) {

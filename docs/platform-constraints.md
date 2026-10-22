@@ -120,25 +120,32 @@ Consequences (all encoded in `src/compat/linux_abi.h` and tested in
   paths are a known risk. The compat layer returns `-ENOSYS` for the
   signal family.
 
-## 6. Linux ABI compatibility matrix (current)
+## 6. Linux ABI compatibility matrix (v1.0.2)
 
 Authoritative live output: `./build/ps5droid-host --matrix`. Summary of
-the 77 tracked syscalls:
+the 79 tracked syscalls:
 
-* **EMULATED (9)** — real in-process behavior, unit tested:
-  `write, mmap, brk, sched_yield, nanosleep, getpid, gettid,
-  clock_gettime, exit_group`
-* **PARTIAL (3)** — implemented with documented restrictions:
+* **EMULATED (31)** — real in-process behavior, unit tested:
+  memory (`mmap`, `brk`), clocks (`clock_gettime`, `clock_getres`,
+  `gettimeofday`, `nanosleep`, `sched_yield`), identity
+  (`getpid`, `gettid`), the guest fd table family (`read`, `write`,
+  `writev`, `open`, `openat`, `close`, `lseek`, `pread64`, `fstat`,
+  `dup`, `dup2`, `epoll_create1`, `epoll_ctl`, `epoll_wait`,
+  `eventfd2`), the path family (`stat`, `newfstatat`, `access`,
+  `mkdir`, `unlink`, `getcwd`), and `exit_group`
+* **PARTIAL (4)** — implemented with documented restrictions:
   `munmap` (whole mappings only), `mprotect` (R/W only; PROT_EXEC not
-  granted), `futex` (WAIT/WAKE + PRIVATE flag only)
-* **UNSUPPORTED (65)** — return `-ENOSYS` with an explanatory note. The
-  hard blockers are `clone/fork/vfork/execve` (no process creation for
-  payloads), the file-descriptor family (no guest fd table yet), and the
-  socket/epoll/signal families.
+  granted), `futex` (WAIT/WAKE + PRIVATE flag only), `getrandom`
+  (host `/dev/urandom`; pool distinction not modeled)
+* **UNSUPPORTED (44)** — return `-ENOSYS` with an explanatory note. The
+  hard blockers remain `clone/fork/vfork/execve` (no process creation
+  for payloads), the socket and signal families, and directory streams.
 
 `getpid` returns the emulation-context id and `gettid` the platform
 thread id — single-process model, documented in
-`src/compat/syscall_dispatch.h`.
+`src/compat/syscall_dispatch.h`. The counts are pinned by
+`tests/test_compat_matrix.cpp` (`matrix_counts_match_v1_0_2_release`)
+so docs and code cannot drift silently.
 
 ## 7. Filesystem
 

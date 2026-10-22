@@ -19,10 +19,37 @@ PS5DROID_TEST(table_entries_valid) {
     CHECK_MSG(kSyscallTableSize >= 70, "table suspiciously small");
 }
 
+PS5DROID_TEST(matrix_counts_match_v1_0_2_release) {
+    // Pinned release facts (docs cite these numbers). If you extend the
+    // table, update the counts here AND in README/architecture/
+    // platform-constraints/CHANGELOG.
+    int emulated = 0, partial = 0, unsupported = 0;
+    for (int i = 0; i < kSyscallTableSize; ++i) {
+        switch (kSyscallTable[i].support) {
+        case kEmulated:
+            ++emulated;
+            break;
+        case kPartial:
+            ++partial;
+            break;
+        case kUnsupported:
+            ++unsupported;
+            break;
+        }
+    }
+    CHECK_MSG(emulated == 31, "31 emulated syscalls in v1.0.2");
+    CHECK_MSG(partial == 4, "4 partial syscalls in v1.0.2");
+    CHECK_MSG(unsupported == 44, "44 unsupported syscalls in v1.0.2");
+    CHECK_MSG(kSyscallTableSize == 79, "79 tracked syscalls in v1.0.2");
+}
+
 PS5DROID_TEST(names_resolve) {
     CHECK_MSG(strcmp(syscall_name(kMmap), "mmap") == 0, "mmap name");
     CHECK_MSG(strcmp(syscall_name(kFutex), "futex") == 0, "futex name");
     CHECK_MSG(strcmp(syscall_name(kGetdents64), "getdents64") == 0, "getdents64 name");
+    CHECK_MSG(strcmp(syscall_name(kWritev), "writev") == 0, "writev must be tracked");
+    CHECK_MSG(strcmp(syscall_name(kStat), "stat") == 0, "stat must be tracked");
+    CHECK_MSG(strcmp(syscall_name(kGetrandom), "getrandom") == 0, "getrandom tracked");
     CHECK_MSG(syscall_name(9999) == nullptr, "unknown must be null");
     CHECK_MSG(syscall_name(kOpen) != nullptr, "open must be tracked");
 }

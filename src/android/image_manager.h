@@ -73,7 +73,12 @@ struct ApkInspection {
     bool has_manifest = false;
     bool has_classes_dex = false;
     bool has_native_libs = false;
+    // Always empty in this release: binary AXML (AndroidManifest.xml) is
+    // a compiled XML format whose string-pool parsing is NOT implemented
+    // here, and the honesty policy forbids placeholder values. package_note
+    // records that limitation explicitly.
     std::string package_name;
+    std::string package_note;
     size_t file_count = 0;
     std::string failure_note;
 };

@@ -25,6 +25,7 @@ jobs:
         run: |
           set -e
           for f in README.md LICENSE THIRD_PARTY_NOTICES.md CMakeLists.txt \
+                   CHANGELOG.md \
                    docs/architecture.md docs/platform-constraints.md \
                    docs/waydroid-analysis.md docs/development.md \
                    .clang-format .gitignore; do
@@ -105,15 +106,28 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -f "$PS5_PAYLOAD_SDK/toolchain/prospero.cmake" || {
+          # The release zip flattens host/ into the SDK root; source
+          # checkouts keep the toolchain under host/toolchain/.
+          TOOLCHAIN=""
+          for candidate in \
+              "$PS5_PAYLOAD_SDK/toolchain/prospero.cmake" \
+              "$PS5_PAYLOAD_SDK/host/toolchain/prospero.cmake"; do
+            if [ -f "$candidate" ]; then
+              TOOLCHAIN="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$TOOLCHAIN" ]; then
             echo "::error::PS5 toolchain file not found"
             find "$PS5_PAYLOAD_SDK" -maxdepth 5 -type f \
               -name '*.cmake' -print
             exit 1
-          }
+          fi
+          echo "Using toolchain: $TOOLCHAIN"
 
           cmake -S . -B build-ps5 -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="$PS5_PAYLOAD_SDK/toolchain/prospero.cmake" \
+            -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
             -DPS5DROID_BUILD_PS5=ON \
             2>&1 | tee configure-ps5.log
 

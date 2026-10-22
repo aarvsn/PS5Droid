@@ -4,7 +4,7 @@
 // Format: 8 rows per glyph, MSB = leftmost pixel, 5 usable columns
 // (bits 7..3; bits 2..0 are always zero and validated by tests).
 // Charset: A-Z, 0-9, space and a small punctuation subset - enough for
-// status screens ("PS5DROID 0.1.0", "CPU: 8 CORES", "[OK] MMAP", ...).
+// status screens ("PS5DROID 1.0.2", "CPU: 8 CORES", "[OK] MMAP", ...).
 #pragma once
 
 #include <cstdint>

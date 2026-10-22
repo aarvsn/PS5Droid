@@ -3,6 +3,8 @@
 // STATUS: implemented against verified API usage (sce_stubs symbols +
 // ps5-payload-dev/SDL button layout and struct), never executed on a
 // console. See docs/platform-constraints.md.
+#include <cstring>
+
 #include "platform/display.h"
 #include "platform/ps5/sce_decls.h"
 

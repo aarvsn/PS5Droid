@@ -233,7 +233,15 @@ ApkInspection inspect_apk(const std::string& apk_path) {
         res.has_native_libs = true;
     }
 
-    res.package_name = "com.ps5droid.research.sample";
+    // Honesty note: the package name lives in the binary AXML form of
+    // AndroidManifest.xml (a compiled XML format). String-pool parsing is
+    // NOT implemented in this project, so no package name is reported. A
+    // placeholder would violate the repository's honesty policy
+    // (docs/development.md, section 6).
+    if (res.has_manifest) {
+        res.package_note =
+            "binary AXML string-pool parsing not implemented; package name not reported";
+    }
     return res;
 }
 

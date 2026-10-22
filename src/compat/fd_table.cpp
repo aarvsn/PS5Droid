@@ -12,6 +12,16 @@ namespace compat {
 
 namespace {
 
+// File-table level errno helper (entries use the protected FdEntry one).
+void set_table_err(int* err, int value) {
+    if (err != nullptr)
+        *err = value;
+}
+
+// ---------------------------------------------------------------------------
+// Regular file backed by host stdio. Positioned I/O (offset >= 0) never
+// moves the shared file offset, matching POSIX pread/pwrite.
+// ---------------------------------------------------------------------------
 class FileFdEntry : public FdEntry {
   public:
     FileFdEntry(const std::string& path, FILE* fp) : path_(path), fp_(fp) {}
@@ -19,31 +29,66 @@ class FileFdEntry : public FdEntry {
 
     FdType type() const override { return FdType::kFile; }
 
-    int64_t read(void* buf, size_t count, int64_t offset) override {
-        if (!fp_)
+    int64_t read(void* buf, size_t count, int64_t offset, int* err) override {
+        if (!fp_) {
+            set_err(err, linux_abi::kEbadf);
             return -1;
+        }
         if (offset >= 0) {
-            fseek(fp_, static_cast<long>(offset), SEEK_SET);
+            long cur = ftell(fp_);
+            if (fseek(fp_, static_cast<long>(offset), SEEK_SET) != 0) {
+                set_err(err, linux_abi::kEinval);
+                return -1;
+            }
+            size_t r = fread(buf, 1, count, fp_);
+            // pread must not move the file offset.
+            fseek(fp_, cur, SEEK_SET);
+            return static_cast<int64_t>(r);
         }
         size_t r = fread(buf, 1, count, fp_);
+        if (r < count && ferror(fp_)) {
+            set_err(err, linux_abi::kEio);
+            return -1;
+        }
         return static_cast<int64_t>(r);
     }
 
-    int64_t write(const void* buf, size_t count, int64_t offset) override {
-        if (!fp_)
+    int64_t write(const void* buf, size_t count, int64_t offset, int* err) override {
+        if (!fp_) {
+            set_err(err, linux_abi::kEbadf);
             return -1;
+        }
         if (offset >= 0) {
-            fseek(fp_, static_cast<long>(offset), SEEK_SET);
+            long cur = ftell(fp_);
+            if (fseek(fp_, static_cast<long>(offset), SEEK_SET) != 0) {
+                set_err(err, linux_abi::kEinval);
+                return -1;
+            }
+            size_t w = fwrite(buf, 1, count, fp_);
+            fflush(fp_);
+            fseek(fp_, cur, SEEK_SET);
+            if (w < count && ferror(fp_)) {
+                set_err(err, linux_abi::kEio);
+                return -1;
+            }
+            return static_cast<int64_t>(w);
         }
         size_t w = fwrite(buf, 1, count, fp_);
         fflush(fp_);
+        if (w < count && ferror(fp_)) {
+            set_err(err, linux_abi::kEio);
+            return -1;
+        }
         return static_cast<int64_t>(w);
     }
 
-    int64_t lseek(int64_t offset, int whence) override {
-        if (!fp_)
+    int64_t lseek(int64_t offset, int whence, int* err) override {
+        if (!fp_) {
+            set_err(err, linux_abi::kEbadf);
             return -1;
+        }
         if (fseek(fp_, static_cast<long>(offset), whence) != 0) {
+            set_err(err, linux_abi::kEinval);
             return -1;
         }
         return static_cast<int64_t>(ftell(fp_));
@@ -58,7 +103,7 @@ class FileFdEntry : public FdEntry {
         long sz = ftell(fp_);
         fseek(fp_, cur, SEEK_SET);
         statbuf->st_size = sz;
-        statbuf->st_mode = 0100644; // S_IFREG
+        statbuf->st_mode = 0100644; // S_IFREG | 0644
         return true;
     }
 
@@ -74,20 +119,36 @@ class FileFdEntry : public FdEntry {
     FILE* fp_;
 };
 
+// ---------------------------------------------------------------------------
+// Process streams (fd 0/1/2). Write-only semantics; reads report EBADF the
+// way Linux does for a write-only descriptor.
+// ---------------------------------------------------------------------------
 class StreamFdEntry : public FdEntry {
   public:
     explicit StreamFdEntry(FILE* stream) : stream_(stream) {}
     FdType type() const override { return FdType::kStream; }
 
-    int64_t read(void*, size_t, int64_t) override { return -1; }
-    int64_t write(const void* buf, size_t count, int64_t) override {
-        if (!stream_ || !buf)
+    int64_t read(void*, size_t, int64_t, int* err) override {
+        set_err(err, linux_abi::kEbadf);
+        return -1;
+    }
+    int64_t write(const void* buf, size_t count, int64_t, int* err) override {
+        if (!stream_ || !buf) {
+            set_err(err, linux_abi::kEbadf);
             return -1;
+        }
         size_t w = fwrite(buf, 1, count, stream_);
         fflush(stream_);
+        if (w < count && ferror(stream_)) {
+            set_err(err, linux_abi::kEio);
+            return -1;
+        }
         return static_cast<int64_t>(w);
     }
-    int64_t lseek(int64_t, int) override { return -1; }
+    int64_t lseek(int64_t, int, int* err) override {
+        set_err(err, linux_abi::kEspipe); // pipes/streams are not seekable
+        return -1;
+    }
     bool fstat(StatBuf* statbuf) override {
         if (!statbuf)
             return false;
@@ -97,100 +158,225 @@ class StreamFdEntry : public FdEntry {
     }
     void close() override { stream_ = nullptr; }
 
+    uint32_t readiness() const override { return linux_abi::kEpollOut; }
+
   private:
     FILE* stream_;
 };
 
+// ---------------------------------------------------------------------------
+// In-process epoll instance. Registration follows Linux epoll_ctl semantics
+// (EEXIST on duplicate ADD, ENOENT on DEL/MOD of an unregistered fd) and
+// wait() reports only entries whose target fd is currently ready.
+// ---------------------------------------------------------------------------
 class EpollFdEntry : public FdEntry {
   public:
-    EpollFdEntry() = default;
+    explicit EpollFdEntry(CompatFdTable* table) : table_(table) {}
     FdType type() const override { return FdType::kEpoll; }
 
-    int64_t read(void*, size_t, int64_t) override { return -1; }
-    int64_t write(const void*, size_t, int64_t) override { return -1; }
-    int64_t lseek(int64_t, int) override { return -1; }
+    int64_t read(void*, size_t, int64_t, int* err) override {
+        set_err(err, linux_abi::kEinval);
+        return -1;
+    }
+    int64_t write(const void*, size_t, int64_t, int* err) override {
+        set_err(err, linux_abi::kEinval);
+        return -1;
+    }
+    int64_t lseek(int64_t, int, int* err) override {
+        set_err(err, linux_abi::kEinval);
+        return -1;
+    }
     bool fstat(StatBuf* statbuf) override {
         if (!statbuf)
             return false;
         memset(statbuf, 0, sizeof(*statbuf));
         return true;
     }
-    void close() override { events_.clear(); }
-
-    bool ctl(int op, int fd, const EpollEvent* event) {
-        if (op == 1 /* EPOLL_CTL_ADD */) {
-            if (!event)
-                return false;
-            events_[fd] = *event;
-            return true;
-        } else if (op == 2 /* EPOLL_CTL_DEL */) {
-            events_.erase(fd);
-            return true;
-        } else if (op == 3 /* EPOLL_CTL_MOD */) {
-            if (!event || events_.find(fd) == events_.end())
-                return false;
-            events_[fd] = *event;
-            return true;
-        }
-        return false;
+    void close() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        events_.clear();
     }
 
-    int wait(EpollEvent* out_events, int maxevents, int timeout_ms) {
-        if (!out_events || maxevents <= 0)
-            return -1;
-        int count = 0;
-        for (const auto& kv : events_) {
-            if (count >= maxevents)
-                break;
-            out_events[count++] = kv.second;
+    uint32_t readiness() const override { return 0; }
+
+    // Returns 0 or a negative Linux errno.
+    int ctl(int op, int fd, const EpollEvent* event) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        switch (op) {
+        case linux_abi::kEpollCtlAdd:
+            if (event == nullptr)
+                return -linux_abi::kEfault;
+            if (events_.count(fd) != 0)
+                return -linux_abi::kEexist;
+            events_[fd] = *event;
+            return 0;
+        case linux_abi::kEpollCtlDel:
+            if (events_.erase(fd) == 0)
+                return -linux_abi::kEnoent;
+            return 0;
+        case linux_abi::kEpollCtlMod:
+            if (event == nullptr)
+                return -linux_abi::kEfault;
+            if (events_.count(fd) == 0)
+                return -linux_abi::kEnoent;
+            events_[fd] = *event;
+            return 0;
+        default:
+            return -linux_abi::kEinval;
         }
-        if (count == 0 && timeout_ms > 0) {
-            platform::sleep_ns(static_cast<uint64_t>(timeout_ms) * 1000000ull);
+    }
+
+    int wait(EpollEvent* out_events, int maxevents, int timeout_ms);
+
+  private:
+    // Collects currently-ready entries; closed targets are auto-deregistered
+    // the way the Linux epoll implementation drops entries on file death.
+    int collect_ready(EpollEvent* out_events, int maxevents) {
+        int count = 0;
+        for (auto it = events_.begin(); it != events_.end();) {
+            auto entry = table_ ? table_->get(it->first) : nullptr;
+            if (!entry) {
+                it = events_.erase(it);
+                continue;
+            }
+            uint32_t requested = it->second.events;
+            uint32_t ready = entry->readiness();
+            uint32_t reported = ready & requested; // only requested bits, like Linux
+            if (reported != 0 && count < maxevents) {
+                EpollEvent ev = it->second;
+                ev.events = reported;
+                out_events[count++] = ev;
+            }
+            ++it;
         }
         return count;
     }
 
-  private:
+    CompatFdTable* table_;
     std::unordered_map<int, EpollEvent> events_;
+    std::mutex mutex_;
 };
 
+// ---------------------------------------------------------------------------
+// eventfd counter with Linux semantics: EFD_SEMAPHORE reads return 1 and
+// decrement; writes that would exceed the counter ceiling fail with EINVAL;
+// readiness tracks counter != 0 (readable) / counter < ceiling (writable).
+// ---------------------------------------------------------------------------
 class EventFdEntry : public FdEntry {
   public:
     explicit EventFdEntry(uint64_t initval) : counter_(initval) {}
     FdType type() const override { return FdType::kEventFd; }
 
-    int64_t read(void* buf, size_t count, int64_t) override {
-        if (count < sizeof(uint64_t) || !buf)
+    int64_t read(void* buf, size_t count, int64_t, int* err) override {
+        if (count < sizeof(uint64_t) || !buf) {
+            set_err(err, linux_abi::kEinval);
             return -1;
-        uint64_t val = counter_;
-        counter_ = 0;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        uint64_t val;
+        if (semaphore_) {
+            if (counter_ == 0) {
+                set_err(err, linux_abi::kEagain);
+                return -1;
+            }
+            val = 1;
+            --counter_;
+        } else {
+            val = counter_;
+            counter_ = 0;
+        }
         std::memcpy(buf, &val, sizeof(uint64_t));
         return sizeof(uint64_t);
     }
 
-    int64_t write(const void* buf, size_t count, int64_t) override {
-        if (count < sizeof(uint64_t) || !buf)
+    int64_t write(const void* buf, size_t count, int64_t, int* err) override {
+        if (count < sizeof(uint64_t) || !buf) {
+            set_err(err, linux_abi::kEinval);
             return -1;
+        }
         uint64_t val = 0;
         std::memcpy(&val, buf, sizeof(uint64_t));
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (val > linux_abi::kEventfdMax - counter_) {
+            set_err(err, linux_abi::kEinval); // counter would overflow
+            return -1;
+        }
         counter_ += val;
         return sizeof(uint64_t);
     }
 
-    int64_t lseek(int64_t, int) override { return -1; }
+    int64_t lseek(int64_t, int, int* err) override {
+        set_err(err, linux_abi::kEspipe);
+        return -1;
+    }
     bool fstat(StatBuf* statbuf) override {
         if (!statbuf)
             return false;
         memset(statbuf, 0, sizeof(*statbuf));
         return true;
     }
-    void close() override { counter_ = 0; }
+    void close() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        counter_ = 0;
+    }
+
+    uint32_t readiness() const override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        uint32_t r = 0;
+        if (counter_ > 0)
+            r |= linux_abi::kEpollIn;
+        if (counter_ < linux_abi::kEventfdMax)
+            r |= linux_abi::kEpollOut;
+        return r;
+    }
+
+    void set_semaphore(bool on) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        semaphore_ = on;
+    }
 
   private:
+    mutable std::mutex mutex_;
     uint64_t counter_ = 0;
+    bool semaphore_ = false;
 };
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// EpollFdEntry::wait needs the entry types above; defined out-of-line.
+// ---------------------------------------------------------------------------
+int EpollFdEntry::wait(EpollEvent* out_events, int maxevents, int timeout_ms) {
+    if (out_events == nullptr || maxevents <= 0)
+        return -1;
+
+    if (timeout_ms == 0) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return collect_ready(out_events, maxevents);
+    }
+
+    int64_t deadline_ns = -1;
+    if (timeout_ms > 0)
+        deadline_ns = static_cast<int64_t>(platform::monotonic_ns()) +
+                      static_cast<int64_t>(timeout_ms) * 1000000;
+
+    while (true) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            int n = collect_ready(out_events, maxevents);
+            if (n > 0)
+                return n;
+        }
+        if (deadline_ns >= 0 && static_cast<int64_t>(platform::monotonic_ns()) >= deadline_ns) {
+            return 0; // timed out, nothing ready
+        }
+        platform::sleep_ns(1000000); // 1 ms polling slice
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CompatFdTable
+// ---------------------------------------------------------------------------
 
 CompatFdTable::CompatFdTable() {
     table_[0] = std::make_shared<StreamFdEntry>(stdin);
@@ -203,49 +389,90 @@ CompatFdTable::~CompatFdTable() {
     table_.clear();
 }
 
+int CompatFdTable::allocate_fd_locked() {
+    // Linux allocates the lowest free descriptor. Slots 0-2 participate too:
+    // once a stream is closed its number may be reused.
+    int fd = 0;
+    while (table_.count(fd) != 0)
+        ++fd;
+    return fd;
+}
+
 int CompatFdTable::open_file(const std::string& path, int flags, int mode) {
-    (void)mode;
-    std::lock_guard<std::mutex> lock(mutex_);
-    const char* fmode = "r";
-    if ((flags & 0x3) == 1)
-        fmode = "w";
-    else if ((flags & 0x3) == 2)
-        fmode = "r+";
-    if (flags & 0x200 /* O_CREAT */) {
-        if (flags & 0x400 /* O_TRUNC */)
-            fmode = "w+";
-        else
-            fmode = "a+";
+    (void)mode; // creation mode is host-umask dependent; not modeled
+    using namespace linux_abi;
+
+    const bool cread = (flags & kOCreat) != 0;
+    const bool excl = (flags & kOExcl) != 0;
+    const bool trunc = (flags & kOTrunc) != 0;
+    const bool append = (flags & kOAppend) != 0;
+    const int access = flags & kOAccmode;
+    if (access != kORdonly && access != kOWronly && access != kORdwr)
+        return -kEinval;
+
+    const bool exists = platform::file_exists(path);
+    if (excl && cread && exists)
+        return -kEexist;
+    if (!cread && !exists)
+        return -kEnoent;
+
+    // Creation step: fopen has no "create if missing, never truncate" mode,
+    // so create first via append mode (creates without truncating), then
+    // reopen with the mode the access pattern requires.
+    FILE* fp = nullptr;
+    if (cread && !exists) {
+        FILE* creator = fopen(path.c_str(), "ab");
+        if (creator == nullptr)
+            return -kEaccess;
+        fclose(creator);
     }
 
-    FILE* fp = fopen(path.c_str(), fmode);
-    if (!fp)
-        return -1;
+    const char* fmode;
+    if (append) {
+        fmode = (access == kORdwr) ? "a+b" : "ab";
+    } else if (trunc) {
+        fmode = (access == kOWronly) ? "wb" : "w+b";
+    } else {
+        // No truncation: r+ covers RDWR/WRONLY without destroying content
+        // (documented restriction: write-only positioning is not modeled).
+        fmode = (access == kORdonly) ? "rb" : "r+b";
+    }
+    fp = fopen(path.c_str(), fmode);
+    if (fp == nullptr)
+        return -kEaccess;
 
-    int fd = next_fd_++;
+    std::lock_guard<std::mutex> lock(mutex_);
+    int fd = allocate_fd_locked();
     table_[fd] = std::make_shared<FileFdEntry>(path, fp);
     return fd;
 }
 
 int CompatFdTable::create_epoll() {
     std::lock_guard<std::mutex> lock(mutex_);
-    int fd = next_fd_++;
-    table_[fd] = std::make_shared<EpollFdEntry>();
+    int fd = allocate_fd_locked();
+    table_[fd] = std::make_shared<EpollFdEntry>(this);
     return fd;
 }
 
 int CompatFdTable::create_eventfd(uint64_t initval, int flags) {
-    (void)flags;
+    using namespace linux_abi;
+    if (initval > kEventfdMax)
+        return -kEinval;
+
     std::lock_guard<std::mutex> lock(mutex_);
-    int fd = next_fd_++;
-    table_[fd] = std::make_shared<EventFdEntry>(initval);
+    int fd = allocate_fd_locked();
+    auto entry = std::make_shared<EventFdEntry>(initval);
+    entry->set_semaphore((flags & kEfdSemaphore) != 0);
+    // kEfdNonblock: reads never block in-process anyway. kEfdCloexec: no
+    // exec exists in the emulation model, so the flag is accepted as a no-op.
+    table_[fd] = entry;
     return fd;
 }
 
-bool CompatFdTable::epoll_ctl(int epfd, int op, int fd, const EpollEvent* event) {
+int CompatFdTable::epoll_ctl(int epfd, int op, int fd, const EpollEvent* event) {
     auto entry = get(epfd);
     if (!entry || entry->type() != FdType::kEpoll)
-        return false;
+        return -linux_abi::kEbadf;
     auto epoll = std::static_pointer_cast<EpollFdEntry>(entry);
     return epoll->ctl(op, fd, event);
 }
@@ -258,32 +485,40 @@ int CompatFdTable::epoll_wait(int epfd, EpollEvent* events, int maxevents, int t
     return epoll->wait(events, maxevents, timeout_ms);
 }
 
-int64_t CompatFdTable::read(int fd, void* buf, size_t count) {
+int64_t CompatFdTable::read(int fd, void* buf, size_t count, int* err) {
     auto entry = get(fd);
-    if (!entry)
+    if (!entry) {
+        set_table_err(err, linux_abi::kEbadf);
         return -1;
-    return entry->read(buf, count, -1);
+    }
+    return entry->read(buf, count, -1, err);
 }
 
-int64_t CompatFdTable::pread64(int fd, void* buf, size_t count, int64_t offset) {
+int64_t CompatFdTable::pread64(int fd, void* buf, size_t count, int64_t offset, int* err) {
     auto entry = get(fd);
-    if (!entry)
+    if (!entry) {
+        set_table_err(err, linux_abi::kEbadf);
         return -1;
-    return entry->read(buf, count, offset);
+    }
+    return entry->read(buf, count, offset, err);
 }
 
-int64_t CompatFdTable::write(int fd, const void* buf, size_t count) {
+int64_t CompatFdTable::write(int fd, const void* buf, size_t count, int* err) {
     auto entry = get(fd);
-    if (!entry)
+    if (!entry) {
+        set_table_err(err, linux_abi::kEbadf);
         return -1;
-    return entry->write(buf, count, -1);
+    }
+    return entry->write(buf, count, -1, err);
 }
 
-int64_t CompatFdTable::lseek(int fd, int64_t offset, int whence) {
+int64_t CompatFdTable::lseek(int fd, int64_t offset, int whence, int* err) {
     auto entry = get(fd);
-    if (!entry)
+    if (!entry) {
+        set_table_err(err, linux_abi::kEbadf);
         return -1;
-    return entry->lseek(offset, whence);
+    }
+    return entry->lseek(offset, whence, err);
 }
 
 bool CompatFdTable::fstat(int fd, StatBuf* statbuf) {
@@ -298,7 +533,7 @@ int CompatFdTable::dup(int oldfd) {
     auto it = table_.find(oldfd);
     if (it == table_.end())
         return -1;
-    int newfd = next_fd_++;
+    int newfd = allocate_fd_locked();
     table_[newfd] = it->second;
     return newfd;
 }
@@ -308,9 +543,9 @@ int CompatFdTable::dup2(int oldfd, int newfd) {
     auto it = table_.find(oldfd);
     if (it == table_.end() || newfd < 0)
         return -1;
+    if (oldfd == newfd)
+        return newfd; // Linux: no-op, returns newfd
     table_[newfd] = it->second;
-    if (newfd >= next_fd_)
-        next_fd_ = newfd + 1;
     return newfd;
 }
 

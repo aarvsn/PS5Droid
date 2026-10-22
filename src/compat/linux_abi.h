@@ -56,6 +56,11 @@ enum LinuxErrno : int {
     kEtimedout = 110,
 };
 
+// ESPIPE (29) — identical value on Linux and FreeBSD; the seeks on
+// pipes/streams must report it instead of EPIPE when a guest seeks a
+// non-seekable descriptor.
+constexpr int kEspipe = 29;
+
 // ---------------------------------------------------------------------------
 // mmap / protection / clock constants (Linux x86_64 UAPI values).
 // ---------------------------------------------------------------------------
@@ -92,6 +97,64 @@ enum LinuxFutexOp : uint32_t {
     kFutexWake = 1,
     kFutexPrivateFlag = 128,
 };
+
+// ---------------------------------------------------------------------------
+// Linux x86_64 open(2) / openat(2) flag values (UAPI). These are NOT the
+// host's O_* values: Linux x86_64 uses O_CREAT=0x40 / O_TRUNC=0x200 /
+// O_APPEND=0x400, which differs from e.g. Darwin where O_CREAT=0x200. The
+// compat layer must translate with THESE values because the guest ABI is
+// Linux (bionic).
+// ---------------------------------------------------------------------------
+
+enum LinuxOpenFlag : int {
+    kOAccmode = 0x3,
+    kORdonly = 0x0,
+    kOWronly = 0x1,
+    kORdwr = 0x2,
+    kOCreat = 0x40,   // 0100
+    kOExcl = 0x80,    // 0200
+    kOTrunc = 0x200,  // 01000
+    kOAppend = 0x400, // 02000
+};
+
+// openat/newfstatat dirfd special values and flags (Linux x86_64 UAPI).
+enum LinuxAtFlag : int {
+    kAtFdcwd = -100,
+    kAtSymlinkNofollow = 0x100,
+};
+
+// eventfd2 flags (Linux x86_64 UAPI).
+enum LinuxEventfdFlag : int {
+    kEfdSemaphore = 0x1,
+    kEfdNonblock = 0x800,
+    kEfdCloexec = 0x80000,
+};
+
+// epoll_ctl operations and the event bits the in-process poller reports.
+enum LinuxEpollOp : int {
+    kEpollCtlAdd = 1,
+    kEpollCtlDel = 2,
+    kEpollCtlMod = 3,
+};
+
+enum LinuxEpollEventBit : uint32_t {
+    kEpollIn = 0x1,
+    kEpollOut = 0x4,
+};
+
+// access(2) mode values (POSIX-identical on both ABIs, kept for clarity).
+enum LinuxAccessMode : int {
+    kFOk = 0,
+    kROk = 4,
+    kWOk = 2,
+    kXOk = 1,
+};
+
+// writev limit (Linux x86_64 IOV_MAX).
+constexpr int kIovMax = 1024;
+
+// eventfd counter ceiling (kernel refuses writes past this value).
+constexpr uint64_t kEventfdMax = 0xfffffffffffffffeull;
 
 // ---------------------------------------------------------------------------
 // Curated Linux x86_64 syscall table.
@@ -156,8 +219,8 @@ enum LinuxSyscall : int {
     kPersonality = 135,
     kPrctl = 157,
     kArchPrctl = 158,
-    kSchedSetaffinity = 203,
     kFutex = 202,
+    kSchedSetaffinity = 203,
     kSchedGetaffinity = 204,
     kGettid = 186,
     kGetdents64 = 217,

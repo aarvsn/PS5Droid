@@ -14,6 +14,7 @@
 #include "compat/linux_abi.h"
 #include "compat/syscall_dispatch.h"
 #include "platform/platform.h"
+#include "version.h"
 
 using namespace ps5droid;
 
@@ -32,7 +33,7 @@ const char* support_name(linux_abi::Support s) {
 }
 
 void print_banner() {
-    printf("PS5Droid host runtime - research build\n");
+    printf("PS5Droid host runtime v%s - research build\n", ps5droid::kVersion);
     printf("  backend      : %s\n", platform::backend_name());
     printf("  page size    : %zu bytes\n", platform::page_size());
     printf("  NOT a PS5 executable; console builds require ps5-payload-sdk\n");
@@ -163,6 +164,11 @@ void attempt_android_start() {
 } // namespace
 
 int main(int argc, char** argv) {
+    if (argc > 1 && strcmp(argv[1], "--version") == 0) {
+        printf("ps5droid-host %s (backend: %s)\n", ps5droid::kVersion, platform::backend_name());
+        return 0;
+    }
+
     print_banner();
     run_probes();
 
@@ -177,6 +183,6 @@ int main(int argc, char** argv) {
 
     demo_linux_abi();
     print_matrix_summary();
-    printf("usage: ps5droid-host [--matrix | --start-attempt]\n");
+    printf("usage: ps5droid-host [--matrix | --start-attempt | --version]\n");
     return 0;
 }

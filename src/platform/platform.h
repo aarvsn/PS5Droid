@@ -9,7 +9,8 @@
 //                      (https://github.com/ps5-payload-dev/sdk).
 //
 // The PS5 backend is only compiled when the ps5-payload-sdk toolchain
-// (host/toolchain/prospero.cmake) drives the build. See
+// (toolchain/prospero.cmake in the release zip; host/toolchain/ in a
+// source checkout) drives the build. See docs/development.md and
 // docs/platform-constraints.md for what has been verified on which backend.
 #pragma once
 

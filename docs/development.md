@@ -1,5 +1,7 @@
 # Development Guide
 
+Current release: **v1.0.2** (see `CHANGELOG.md` and `src/version.h`).
+
 ## 1. Repository layout
 
 See `docs/architecture.md` for the module map. Tests live in `tests/`
@@ -19,6 +21,7 @@ ctest --test-dir build --output-on-failure   # runs the unit suite
 ./build/ps5droid-host                        # capability probes + ABI demo
 ./build/ps5droid-host --matrix               # full Linux ABI matrix
 ./build/ps5droid-host --start-attempt        # honest blocker report
+./build/ps5droid-host --version              # release version
 ```
 
 Sanitizer run (recommended before commits; caught real bugs in this
@@ -27,7 +30,8 @@ repo):
 ```sh
 g++ -g -O1 -fsanitize=address,undefined -std=c++17 \
     -Isrc -Itests tests/*.cpp src/platform/*.cpp src/compat/*.cpp \
-    src/android/*.cpp src/ui/*.cpp -o /tmp/ps5d_tests_asan
+    src/android/*.cpp src/android/binder/*.cpp src/ui/*.cpp \
+    -o /tmp/ps5d_tests_asan
 /tmp/ps5d_tests_asan
 ```
 
@@ -47,6 +51,12 @@ cmake -B build-ps5 \
 cmake --build build-ps5 --target ps5droid
 # produces build-ps5/ps5droid.elf  (an ELF payload, NOT a PKG)
 ```
+
+**Toolchain path**: the ps5-payload-sdk *release zip* flattens the host
+layout, so the toolchain is at `<sdk>/toolchain/prospero.cmake`. A
+*source checkout* of the SDK keeps it under
+`<sdk>/host/toolchain/prospero.cmake` — adjust the flag if you built
+the SDK from source. CI uses the release-zip path.
 
 Deploy to a console already running an ELF loader:
 
@@ -73,7 +83,8 @@ console results as new evidence when you get them, and record them in
   static strings or stable storage — never stack buffers.
 * Every syscall added to `compat/linux_abi.h` must (a) carry a support
   class and honest note, (b) have a handler or return `-ENOSYS`, and
-  (c) extend the tests (`test_compat_matrix.cpp` anchors the ABI facts).
+  (c) extend the tests (`test_compat_matrix.cpp` pins the matrix
+  counts; update the pinned numbers when you change the table).
 * PS5 firmware API usage must cite provenance in `sce_decls.h`.
 * clang-format config at `.clang-format` (LLVM-based, 4-space indent).
 
@@ -96,7 +107,9 @@ console results as new evidence when you get them, and record them in
    *implemented, not tested on console* / *experimental* / *not
    implemented* / *blocked*. Every status table in the repo uses these.
 3. Anything that cannot be done returns an error with an explanation
-   (e.g. `-ENOSYS` with a note) instead of pretending.
+   (e.g. `-ENOSYS` with a note) instead of pretending. This applies to
+   values too: the APK inspector reports no package name rather than a
+   plausible-looking placeholder.
 4. Proprietary material (Sony SDKs, console keys, Play Services,
    Widevine, proprietary codecs) is never bundled or downloaded.
 

@@ -5,16 +5,18 @@
 #
 # PS5 payload build (requires ps5-payload-sdk, see docs/development.md):
 #   cmake -B build-ps5 \
-#     -DCMAKE_TOOLCHAIN_FILE=$PS5_PAYLOAD_SDK/host/toolchain/prospero.cmake \
+#     -DCMAKE_TOOLCHAIN_FILE=$PS5_PAYLOAD_SDK/toolchain/prospero.cmake \
 #     -DPS5DROID_BUILD_PS5=ON
 #   cmake --build build-ps5 --target ps5droid
 #
-# The PS5 target is opt-in and produces ps5droid.elf (an ELF payload). It
-# does NOT produce a PKG; packaging is not implemented.
+# Toolchain path note: the ps5-payload-sdk RELEASE zip installs the
+# toolchain at <sdk>/toolchain/prospero.cmake; a source checkout of the
+# SDK keeps it under <sdk>/host/toolchain/prospero.cmake. Both layouts are
+# documented in docs/development.md.
 cmake_minimum_required(VERSION 3.16)
 
 project(ps5droid
-    VERSION 0.1.0
+    VERSION 1.0.2
     DESCRIPTION "PS5Droid - native Android runtime research for PS5"
     LANGUAGES C CXX)
 
@@ -36,7 +38,8 @@ option(PS5DROID_BUILD_TESTS "Build host unit tests" ON)
 if(PS5DROID_BUILD_PS5 AND NOT PROSPERO)
     message(FATAL_ERROR
         "PS5DROID_BUILD_PS5=ON requires the ps5-payload-sdk toolchain file: "
-        "-DCMAKE_TOOLCHAIN_FILE=$PS5_PAYLOAD_SDK/host/toolchain/prospero.cmake")
+        "-DCMAKE_TOOLCHAIN_FILE=$PS5_PAYLOAD_SDK/toolchain/prospero.cmake "
+        "(release zip layout; source checkouts keep it under host/toolchain/)")
 endif()
 
 if(PROSPERO)
@@ -67,6 +70,7 @@ add_library(ps5droid_core STATIC
     src/android/binder/binder_engine.cpp
     src/ui/launcher.cpp
     src/ui/bitmap_font.cpp
+    src/ui/screens.cpp
 )
 
 target_include_directories(ps5droid_core PUBLIC src)
@@ -98,10 +102,12 @@ if(PS5DROID_BUILD_TESTS AND PS5DROID_BUILD_HOST AND NOT PROSPERO)
         tests/test_platform_threads.cpp
         tests/test_compat_dispatch.cpp
         tests/test_compat_matrix.cpp
+        tests/test_compat_fs_syscalls.cpp
         tests/test_ipc_ring.cpp
         tests/test_image_manager.cpp
         tests/test_runtime_manager.cpp
         tests/test_ui.cpp
+        tests/test_screens.cpp
         tests/test_bionic_and_fd.cpp
         tests/test_binder_and_apk.cpp
     )
