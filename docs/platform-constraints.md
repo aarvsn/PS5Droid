@@ -120,31 +120,31 @@ Consequences (all encoded in `src/compat/linux_abi.h` and tested in
   paths are a known risk. The compat layer returns `-ENOSYS` for the
   signal family.
 
-## 6. Linux ABI compatibility matrix (v1.0.2)
+## 6. Linux ABI compatibility matrix (v1.0.3)
 
 Authoritative live output: `./build/ps5droid-host --matrix`. Summary of
 the 79 tracked syscalls:
 
-* **EMULATED (31)** — real in-process behavior, unit tested:
+* **EMULATED (36)** — real in-process behavior, unit tested:
   memory (`mmap`, `brk`), clocks (`clock_gettime`, `clock_getres`,
   `gettimeofday`, `nanosleep`, `sched_yield`), identity
-  (`getpid`, `gettid`), the guest fd table family (`read`, `write`,
+  (`getpid`, `gettid`), system & process (`uname`, `prctl`), the guest fd table family (`read`, `write`,
   `writev`, `open`, `openat`, `close`, `lseek`, `pread64`, `fstat`,
-  `dup`, `dup2`, `epoll_create1`, `epoll_ctl`, `epoll_wait`,
-  `eventfd2`), the path family (`stat`, `newfstatat`, `access`,
+  `dup`, `dup2`, `dup3`, `pipe2`, `epoll_create1`, `epoll_ctl`, `epoll_wait`,
+  `eventfd2`), the path family (`stat`, `newfstatat`, `access`, `readlink`,
   `mkdir`, `unlink`, `getcwd`), and `exit_group`
 * **PARTIAL (4)** — implemented with documented restrictions:
   `munmap` (whole mappings only), `mprotect` (R/W only; PROT_EXEC not
   granted), `futex` (WAIT/WAKE + PRIVATE flag only), `getrandom`
   (host `/dev/urandom`; pool distinction not modeled)
-* **UNSUPPORTED (44)** — return `-ENOSYS` with an explanatory note. The
+* **UNSUPPORTED (39)** — return `-ENOSYS` with an explanatory note. The
   hard blockers remain `clone/fork/vfork/execve` (no process creation
   for payloads), the socket and signal families, and directory streams.
 
 `getpid` returns the emulation-context id and `gettid` the platform
 thread id — single-process model, documented in
 `src/compat/syscall_dispatch.h`. The counts are pinned by
-`tests/test_compat_matrix.cpp` (`matrix_counts_match_v1_0_2_release`)
+`tests/test_compat_matrix.cpp` (`matrix_counts_match_v1_0_3_release`)
 so docs and code cannot drift silently.
 
 ## 7. Filesystem

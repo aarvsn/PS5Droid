@@ -1,13 +1,14 @@
 // PS5Droid - Guest File Descriptor Table and Epoll abstraction.
 //
-// Milestone 3 (extended in v1.0.2): in-process file descriptor table
-// managing simulated guest fds (files, streams, epoll instances, eventfds)
+// Milestone 3 (extended in v1.0.2 & v1.0.3): in-process file descriptor table
+// managing simulated guest fds (files, streams, epoll instances, eventfds, pipes)
 // with Linux-semantics behavior:
 //   * lowest-free fd allocation (like Linux alloc_fd),
 //   * Linux x86_64 O_* flag values on open/openat (kOCreat = 0x40, ...),
 //   * epoll_ctl EEXIST/ENOENT semantics and readiness-based epoll_wait,
 //   * eventfd counters with EFD_SEMAPHORE and overflow (EINVAL) semantics,
-//   * pread64 that does not move the shared file offset.
+//   * pread64 that does not move the shared file offset,
+//   * in-process unidirectional pipes.
 //
 // Operations report a Linux errno (from linux_abi::LinuxErrno) on failure
 // so the dispatch layer can surface the correct error to the guest.
@@ -31,6 +32,7 @@ enum class FdType {
     kStream,
     kEpoll,
     kEventFd,
+    kPipe,
 };
 
 struct StatBuf {
@@ -93,6 +95,9 @@ class CompatFdTable {
     int create_epoll();
     // Returns the new fd, or -EINVAL for initval above the kernel ceiling.
     int create_eventfd(uint64_t initval, int flags);
+
+    // Creates an in-process guest pipe.
+    int create_pipe(int pipefds[2], int flags);
 
     // Returns 0, or a negative Linux errno (-EEXIST / -ENOENT / -EINVAL).
     int epoll_ctl(int epfd, int op, int fd, const EpollEvent* event);

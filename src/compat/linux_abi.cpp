@@ -46,6 +46,8 @@ const SyscallInfo kSyscallTable[] = {
     {kEpollCreate1, "epoll_create1", kEmulated, "creates in-process epoll instance in fd table"},
     {kWritev, "writev", kEmulated,
      "writes guest iovecs to guest fds (iovec pointers are host pointers)"},
+    {kDup3, "dup3", kEmulated, "duplicates guest fds with flags to target index"},
+    {kPipe2, "pipe2", kEmulated, "creates in-process guest pipe fds in fd table"},
 
     // --- path / filesystem family (host stat/stdio backed) -----------------
     {kStat, "stat", kEmulated, "guest path stat via host stat(2); StatBuf is the guest layout"},
@@ -53,12 +55,17 @@ const SyscallInfo kSyscallTable[] = {
     {kGetcwd, "getcwd", kEmulated, "returns the host process cwd (single-process model)"},
     {kMkdir, "mkdir", kEmulated, "mkdir via host mkdir(2); mode honored"},
     {kUnlink, "unlink", kEmulated, "unlink via host unlink(2)"},
+    {kReadlink, "readlink", kEmulated, "reads link via host readlink(2) or /proc/self/exe"},
     {kGettimeofday, "gettimeofday", kEmulated, "host realtime clock, timeval layout"},
     {kClockGetres, "clock_getres", kEmulated, "REALTIME/MONOTONIC resolution reported as 1 ns"},
     {kNewfstatat, "newfstatat", kEmulated, "AT_FDCWD only; AT_SYMLINK_NOFOLLOW honored via lstat"},
     {kGetrandom, "getrandom", kPartial,
      "entropy from the host /dev/urandom; GRND_RANDOM pool distinction not "
      "modeled; Orbis availability unverified [ASSUMPTION]"},
+
+    // --- system identity & process control --------------------------------
+    {kUname, "uname", kEmulated, "synthesizes Linux kernel utsname identity for guest ABI"},
+    {kPrctl, "prctl", kEmulated, "emulates PR_SET_NAME and PR_GET_NAME for process/thread names"},
 
     // --- honestly unsupported; these are the hard blockers -----------------
     {kRtSigaction, "rt_sigaction", kUnsupported, "Linux signal ABI not implemented on Orbis"},
@@ -79,19 +86,16 @@ const SyscallInfo kSyscallTable[] = {
     {kExit, "exit", kUnsupported, "thread exit path not implemented"},
     {kWait4, "wait4", kUnsupported, "no child processes exist in the emulation model"},
     {kKill, "kill", kUnsupported, "no signal delivery between processes"},
-    {kUname, "uname", kUnsupported, "would require synthesizing a fake kernel identity; refused"},
     {kFcntl, "fcntl", kUnsupported, "guest fd flag storage not implemented"},
     {kFlock, "flock", kUnsupported, "advisory locks not implemented"},
     {kFsync, "fsync", kUnsupported, "write-through is not guaranteed in-process"},
     {kChdir, "chdir", kUnsupported, "would change the host process cwd; side-effectful, refused"},
-    {kReadlink, "readlink", kUnsupported, "guest symlink layer not implemented"},
     {kGetuid, "getuid", kUnsupported, "identity model undecided; refusing to fake a uid"},
     {kGetgid, "getgid", kUnsupported, "identity model undecided"},
     {kGeteuid, "geteuid", kUnsupported, "identity model undecided"},
     {kGetppid, "getppid", kUnsupported, "no parent in emulation model"},
     {kSigaltstack, "sigaltstack", kUnsupported, "signal ABI not implemented"},
     {kPersonality, "personality", kUnsupported, "not implemented"},
-    {kPrctl, "prctl", kUnsupported, "bionic relies on prctl during init; not implemented"},
     {kArchPrctl, "arch_prctl", kUnsupported, "not implemented"},
     {kSchedSetaffinity, "sched_setaffinity", kUnsupported, "not implemented"},
     {kSchedGetaffinity, "sched_getaffinity", kUnsupported, "not implemented"},
@@ -103,8 +107,6 @@ const SyscallInfo kSyscallTable[] = {
     {kUnlinkat, "unlinkat", kUnsupported, "dirfd-relative removal not wired (AT_FDCWD only paths)"},
     {kPpoll, "ppoll", kUnsupported, "poll layer not implemented"},
     {kSetRobustList, "set_robust_list", kUnsupported, "not implemented"},
-    {kDup3, "dup3", kUnsupported, "guest fd table not implemented"},
-    {kPipe2, "pipe2", kUnsupported, "no guest fd table"},
     {kInotifyInit1, "inotify_init1", kUnsupported, "not implemented"},
     {kMemfdCreate, "memfd_create", kUnsupported,
      "Linux memfd has no Orbis equivalent; unimplemented"},

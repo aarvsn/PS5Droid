@@ -16,16 +16,16 @@ Waydroid is used as an *architectural reference* only (see
 code is imported. Low-level console facts come from the open-source
 [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk) ecosystem.
 
-## Current status (v1.0.2)
+## Current status (v1.0.3)
 
 | Area | Status |
 |---|---|
 | Portable platform layer (memory, threads, fs, IPC) | **Implemented and tested (host)** |
-| Linux ABI dispatch experiment (guest fd table with Linux `O_*` flags, readiness-based epoll/eventfd, mmap/brk/futex subset, path-stat family, writev, getrandom) | **Implemented and tested (host)** |
-| Compatibility matrix (79 syscalls: 31 emulated / 4 partial / 44 unsupported) | **Implemented and tested (host)** |
+| Linux ABI dispatch experiment (guest fd table with Linux `O_*` flags, readiness-based epoll/eventfd, guest pipes, mmap/brk/futex, path-stat family, writev, uname, prctl, getrandom) | **Implemented and tested (host)** |
+| Compatibility matrix (79 syscalls: 36 emulated / 4 partial / 39 unsupported) | **Implemented and tested (host)** |
 | Capability probes + runtime manager with structured blockers | **Implemented and tested (host)** |
-| Android image manifest + SHA-256 + read-only ext4 superblock probe | **Implemented and tested (host)** |
-| APK structural inspection (honest: no package name fabricated) | **Implemented and tested (host)** |
+| Android image manifest + SHA-256 + read-only ext4 superblock probe + build.prop parser | **Implemented and tested (host)** |
+| APK inspection (binary AXML manifest parsing, ZIP entry extraction, package name & SDK levels) | **Implemented and tested (host)** |
 | Launcher UI model + 8x8 framebuffer font + shared screen builders | **Implemented and tested (host)** |
 | Native PS5 payload (`ps5droid.elf`, video-out + pad + probe/status/matrix/about screens) | **Implemented, NOT tested on console** |
 | PS5 PKG packaging | **Not implemented** (ELF-payload path only) |
@@ -34,7 +34,7 @@ code is imported. Low-level console facts come from the open-source
 | Audio output | **Not implemented** (explicitly reported unsupported) |
 | Vulkan / GPU-accelerated Android graphics | **Blocked** (no Vulkan driver for homebrew; proprietary AGC/GNM only) |
 
-Build status: host build + 65 unit tests green (gcc and clang, ASan/UBSan
+Build status: host build + unit tests green (gcc and clang, ASan/UBSan
 clean). The PS5 target is cross-built in CI, using the official
 open-source SDK.
 
@@ -54,15 +54,15 @@ app/main.cpp (host CLI)          app/ps5_main.cpp (PS5 payload)
   provenance-documented firmware declarations.
 * **compat/** — accepts Linux x86_64 syscall numbers and executes an
   honestly classified subset (anonymous memory, clocks, futex wait/wake,
-  a guest fd table with Linux `O_*` flag values, readiness-based
-  epoll/eventfd, path stat family, writev, getrandom); everything else
+  a guest fd table with Linux `O_*` flag values, guest pipes, readiness-based
+  epoll/eventfd, path stat family, writev, uname, prctl, getrandom); everything else
   returns `-ENOSYS` with an explanation. The verified
   Linux→FreeBSD number mapping (e.g. mmap 9→477) is data in
   `src/compat/linux_abi.h`.
 * **android/** — image handling (manifest, SHA-256, ext4 superblock
-  probe; no mounting is possible on Orbis), the in-process Binder RPC
-  engine, and the runtime manager whose start attempt always reports
-  structured, reasoned blockers today.
+  probe, build.prop parsing; no mounting is possible on Orbis), binary AXML
+  manifest inspection, the in-process Binder RPC engine, and the runtime manager
+  whose start attempt always reports structured, reasoned blockers today.
 * **ui/** — pad/keyboard-driven launcher model, a framebuffer font, and
   the shared screen builders (`ui/screens`) that turn runtime and
   matrix data into the exact lines both entry points render.

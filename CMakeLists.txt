@@ -16,7 +16,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(ps5droid
-    VERSION 1.0.2
+    VERSION 1.0.3
     DESCRIPTION "PS5Droid - native Android runtime research for PS5"
     LANGUAGES C CXX)
 

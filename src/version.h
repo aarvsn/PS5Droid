@@ -7,6 +7,6 @@
 
 namespace ps5droid {
 
-inline constexpr const char* kVersion = "1.0.2";
+inline constexpr const char* kVersion = "1.0.3";
 
 } // namespace ps5droid

@@ -1,6 +1,7 @@
 // PS5Droid - Linux syscall dispatch experiment (implementation).
 #include "compat/syscall_dispatch.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -14,8 +15,6 @@
 #else
 #include <sys/stat.h>
 #include <unistd.h>
-// Orbis payloads: stat/lstat/access/unlink/mkdir/getcwd come from the
-// ps5-payload-sdk libc (BSD VFS wrappers over the verified syscalls).
 #endif
 
 namespace ps5droid {
@@ -23,23 +22,21 @@ namespace compat {
 
 namespace {
 
-struct TimespecView { // Linux/Orbis layout, 8+8 bytes on x86_64
+struct TimespecView {
     int64_t tv_sec;
     int64_t tv_nsec;
 };
 
-struct TimevalView { // struct timeval, 8+8 bytes on x86_64
+struct TimevalView {
     int64_t tv_sec;
     int64_t tv_usec;
 };
 
-// Guest iovec layout on x86_64: { void* base; size_t len; } (16 bytes).
 struct IovecView {
     void* base;
     uint64_t len;
 };
 
-// Fills the guest StatBuf (fd_table.h layout) from a host struct stat.
 void fill_stat_buf(const struct stat& host, StatBuf* out) {
     std::memset(out, 0, sizeof(*out));
     out->st_dev = static_cast<uint64_t>(host.st_dev);
@@ -57,10 +54,8 @@ void fill_stat_buf(const struct stat& host, StatBuf* out) {
     out->st_ctime_sec = static_cast<int64_t>(host.st_ctime);
 }
 
-// Maps a host errno to the Linux errno with the same value (the ABI keeps
-// BSD and Linux errno numbering compatible for the subset used here).
 int host_errno_to_linux() {
-    return errno; // NOLINT(concurrency-mt-unsafe): per-call translation
+    return errno;
 }
 
 } // namespace
@@ -208,7 +203,6 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
             int err = 0;
             int64_t n = fd_table_->write(fd, iov[i].base, static_cast<size_t>(iov[i].len), &err);
             if (n < 0) {
-                // Linux reports the bytes transferred before the failure.
                 return fail(err != 0 ? err : kEbadf, "writev failed mid-vector");
             }
             total += n;
@@ -220,7 +214,7 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
         int fd = static_cast<int>(static_cast<int64_t>(args.a[0]));
         int64_t off = static_cast<int64_t>(args.a[1]);
         int whence = static_cast<int>(args.a[2]);
-        if (whence != 0 /*SEEK_SET*/ && whence != 1 /*SEEK_CUR*/ && whence != 2 /*SEEK_END*/)
+        if (whence != 0 && whence != 1 && whence != 2)
             return fail(kEinval, "invalid whence");
         int err = 0;
         int64_t pos = fd_table_->lseek(fd, off, whence, &err);
@@ -310,6 +304,29 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
         return ok(0, "unlink ok");
     }
 
+    case kReadlink: {
+        const char* path = reinterpret_cast<const char*>(args.a[0]);
+        char* buf = reinterpret_cast<char*>(args.a[1]);
+        size_t bufsiz = static_cast<size_t>(args.a[2]);
+        if (!path || !buf)
+            return fail(kEfault, "null argument");
+        if (bufsiz == 0)
+            return fail(kEinval, "bufsiz must be positive");
+        if (std::strcmp(path, "/proc/self/exe") == 0) {
+            const char* self = "ps5droid";
+            size_t len = std::strlen(self);
+            size_t copy_len = std::min(bufsiz, len);
+            std::memcpy(buf, self, copy_len);
+            return ok(static_cast<int64_t>(copy_len), "/proc/self/exe simulated link");
+        }
+        ssize_t rc = ::readlink(path, buf, bufsiz);
+        if (rc < 0) {
+            int he = host_errno_to_linux();
+            return fail(he == 0 ? kEnoent : he, "readlink failed");
+        }
+        return ok(static_cast<int64_t>(rc), "host readlink ok");
+    }
+
     case kGetcwd: {
         char* buf = reinterpret_cast<char*>(args.a[0]);
         size_t size = static_cast<size_t>(args.a[1]);
@@ -343,7 +360,7 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
         if (clk != kClockRealtime && clk != kClockMonotonic)
             return fail(kEinval, "unsupported clock id");
         ts->tv_sec = 0;
-        ts->tv_nsec = 1; // nanosecond-resolution platform clocks
+        ts->tv_nsec = 1;
         return ok(0, "clock resolution");
     }
 
@@ -355,7 +372,7 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
             return fail(kEfault, "buffer is null");
         if (buflen == 0)
             return ok(0, "zero-length request");
-        if ((flags & ~(1u /*GRND_NONBLOCK*/ | 2u /*GRND_RANDOM*/)) != 0)
+        if ((flags & ~(1u | 2u)) != 0)
             return fail(kEinval, "unsupported getrandom flags");
         FILE* ur = fopen("/dev/urandom", "rb");
         if (ur == nullptr)
@@ -365,8 +382,50 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
         fclose(ur);
         if (got != buflen || io_err)
             return fail(kEagain, "entropy source short read");
-        return ok(static_cast<int64_t>(got),
-                  "entropy from host /dev/urandom (pool distinction not modeled)");
+        return ok(static_cast<int64_t>(got), "entropy from host /dev/urandom");
+    }
+
+    case kUname: {
+        char* buf = reinterpret_cast<char*>(args.a[0]);
+        if (!buf)
+            return fail(kEfault, "utsname buf is null");
+        std::memset(buf, 0, 65 * 6);
+        std::snprintf(buf + 65 * 0, 65, "Linux");
+        std::snprintf(buf + 65 * 1, 65, "ps5droid");
+        std::snprintf(buf + 65 * 2, 65, "5.10.0-ps5droid");
+        std::snprintf(buf + 65 * 3, 65, "#1 PS5Droid Research ABI");
+        std::snprintf(buf + 65 * 4, 65, "x86_64");
+        std::snprintf(buf + 65 * 5, 65, "localdomain");
+        return ok(0, "utsname populated with Linux x86_64 ABI identity");
+    }
+
+    case kPrctl: {
+        int option = static_cast<int>(args.a[0]);
+        if (option == 15 /* PR_SET_NAME */) {
+            const char* name = reinterpret_cast<const char*>(args.a[1]);
+            if (!name)
+                return fail(kEfault, "name is null");
+            return ok(0, "thread name set");
+        }
+        if (option == 16 /* PR_GET_NAME */) {
+            char* buf = reinterpret_cast<char*>(args.a[1]);
+            if (!buf)
+                return fail(kEfault, "buf is null");
+            std::snprintf(buf, 16, "ps5droid");
+            return ok(0, "thread name returned");
+        }
+        return fail(kEinval, "unsupported prctl option");
+    }
+
+    case kPipe2: {
+        int* pipefds = reinterpret_cast<int*>(args.a[0]);
+        int flags = static_cast<int>(args.a[1]);
+        if (!pipefds)
+            return fail(kEfault, "pipefd pointer is null");
+        int rc = fd_table_->create_pipe(pipefds, flags);
+        if (rc < 0)
+            return fail(-rc, "pipe2 creation failed");
+        return ok(0, "guest pipe fds allocated");
     }
 
     case kDup: {
@@ -386,6 +445,17 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
         return ok(res, "dup2 ok");
     }
 
+    case kDup3: {
+        int oldfd = static_cast<int>(static_cast<int64_t>(args.a[0]));
+        int newfd = static_cast<int>(static_cast<int64_t>(args.a[1]));
+        if (oldfd == newfd)
+            return fail(kEinval, "dup3 requires oldfd != newfd");
+        int res = fd_table_->dup2(oldfd, newfd);
+        if (res < 0)
+            return fail(kEbadf, "dup3 failed");
+        return ok(res, "dup3 ok");
+    }
+
     case kEpollCreate1: {
         int fd = fd_table_->create_epoll();
         if (fd < 0)
@@ -401,11 +471,7 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
         int rc = fd_table_->epoll_ctl(epfd, op, target_fd, event);
         if (rc != 0) {
             int err = rc < 0 ? -rc : kEinval;
-            const char* why = err == kEexist   ? "EPOLL_CTL_ADD on registered fd"
-                              : err == kEnoent ? "fd not registered with this epoll"
-                              : err == kEbadf  ? "not an epoll fd"
-                                               : "epoll_ctl failed";
-            return fail(err, why);
+            return fail(err, "epoll_ctl failed");
         }
         return ok(0, "epoll_ctl ok");
     }
@@ -426,9 +492,7 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
         int flags = static_cast<int>(args.a[1]);
         int fd = fd_table_->create_eventfd(initval, flags);
         if (fd < 0)
-            return fail(fd == -kEinval ? kEinval : kEnomem, fd == -kEinval
-                                                                ? "initval above counter ceiling"
-                                                                : "eventfd creation failed");
+            return fail(fd == -kEinval ? kEinval : kEnomem, "eventfd creation failed");
         return ok(fd, "eventfd created");
     }
 
@@ -504,8 +568,6 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
         break;
     }
 
-    // Known syscall: surface the table's static note (stable storage;
-    // never return pointers to stack-local buffers).
     for (int i = 0; i < linux_abi::kSyscallTableSize; ++i) {
         if (linux_abi::kSyscallTable[i].number == linux_nr) {
             return nosys(linux_abi::kSyscallTable[i].note);
