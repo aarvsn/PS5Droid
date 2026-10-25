@@ -34,14 +34,14 @@ src/
 ├── compat/                   Linux ABI experiment (Milestone 3+)
 │   ├── linux_abi.h/.cpp      syscall constants + tables + verified FreeBSD mapping
 │   ├── memory_compat.cpp     Linux brk + anonymous MAP_PRIVATE mmap semantics
-│   ├── fd_table.h/.cpp       guest fd table: Linux O_* flags, lowest-free fds,
+│   ├── fd_table.h/.cpp       guest fd table: Linux O_* flags, lowest-free fds, guest pipes,
 │   │                         readiness-based epoll, eventfd (EFD_SEMAPHORE/overflow)
 │   ├── syscall_dispatch.cpp  Linux syscall number -> emulated op dispatch
 │   ├── bionic_loader.cpp     x86_64 ELF inspection + auxv/initial-stack builder
 │   └── ipc_compat.cpp        SPSC ring + Binder-style block allocator
 ├── android/
 │   ├── sha256.cpp            FIPS 180-4 (clean-room)
-│   ├── image_manager.cpp     manifest parsing + ext4 superblock + APK probe
+│   ├── image_manager.cpp     manifest parsing + ext4 superblock + AXML parser + ZIP + build.prop
 │   ├── runtime_manager.cpp   capability probes + honest start attempts
 │   └── binder/
 │       ├── binder_engine.h/.cpp  in-process Binder RPC engine (Milestone 5)
@@ -72,7 +72,8 @@ Build rules enforced by CMake:
 +---------------------------+----------------------------------+
 | android/runtime_manager   |  android/image_manager           |
 |  - capability probes      |   - manifest + ext4 probe        |
-|  - blocker reporting      |   - sha256 verification          |
+|  - blocker reporting      |   - AXML + ZIP + build.prop      |
+|                           |   - sha256 verification          |
 +---------------------------+----------------------------------+
 | compat/syscall_dispatch (Linux ABI experiment)                |
 |   uses compat/memory_compat + platform::Futex                 |
@@ -100,21 +101,22 @@ numbers and executes a curated subset:
 * `futex` WAIT/WAKE (private) over `platform::Futex` (registry-based,
   wake-atomicity mirrors Linux's kernel-side check-and-enqueue);
 * a **guest fd table** (`compat::CompatFdTable`) with Linux `O_*` flag
-  values, lowest-free fd allocation, `dup`/`dup2`, positioned `pread64`
-  that never moves the shared offset, eventfd counters honoring
-  `EFD_SEMAPHORE` and the overflow ceiling, and `writev` gather output;
+  values, lowest-free fd allocation, `dup`/`dup2`/`dup3`, in-process guest pipes (`pipe2`),
+  positioned `pread64` that never moves the shared offset, eventfd counters
+  honoring `EFD_SEMAPHORE` and the overflow ceiling, and `writev` gather output;
 * **readiness-based epoll**: `epoll_ctl` enforces Linux `EEXIST`/
   `ENOENT` semantics and `epoll_wait` reports only entries whose target
-  fd is currently ready (eventfd counters drive the readiness);
+  fd is currently ready (eventfd counters and pipes drive readiness);
 * the path family `stat`/`newfstatat` (AT_FDCWD only), `access`,
-  `mkdir`, `unlink`, `getcwd` over host stat/stdio calls;
+  `mkdir`, `unlink`, `readlink`, `getcwd` over host stat/stdio/symlink calls;
+* `uname` and `prctl` (process/thread naming);
 * `getrandom` (PARTIAL) from the host `/dev/urandom`;
 * `write` to the process streams (fd 1/2);
 * `exit_group` flags the context.
 
 Everything else returns `-ENOSYS` with a *stable, explanatory note*
-sourced from the syscall table. The matrix (31 emulated / 4 partial /
-44 unsupported = 79 tracked at the v1.0.2 release) is data, not prose:
+sourced from the syscall table. The matrix (36 emulated / 4 partial /
+39 unsupported = 79 tracked at the v1.0.3 release) is data, not prose:
 `ps5droid-host --matrix` prints it, tests pin the counts, and the
 release documents repeat them.
 
@@ -158,29 +160,30 @@ documented in `development.md`; CI cross-builds the ELF on every push.
 | Waydroid component | PS5Droid equivalent |
 |---|---|
 | LXC container manager | none — single-process emulation context |
-| loop-mounted ext4 rootfs | read-only image inspection (ext4 probe) |
+| loop-mounted ext4 rootfs | read-only image inspection (ext4 probe) + build.prop parser |
 | binder/binderfs | in-process Binder RPC engine (Milestone 5) + SPSC ring + block allocator |
 | Wayland hwcomposer HAL | direct video-out + bitmap-font UI |
 | PulseAudio audio HAL | nothing yet (explicitly unsupported) |
 | D-Bus/systemd orchestration | RuntimeManager state machine |
 | OTA images + sha256 | ImageManifest + Sha256 (reimplemented) |
-| waydroid.prop | ImageManifest properties |
+| waydroid.prop | ImageManifest properties / BuildProp |
 
 ## 8. Roadmap (from the milestone plan)
 
 1. **M1 done** — host foundation, tests, CI, PS5 build path (ELF-only).
 2. **M2 next** — run the same probes on a real console via elfldr and
    fill the [ASSUMPTION] items in `platform-constraints.md`.
-3. **M3 mostly done (v1.0.2)** — anonymous-memory subset, guest fd
-   table with Linux flag semantics, readiness-based epoll/eventfd, and
-   the path-stat family demonstrated end-to-end; remaining: sockets,
-   signals, directory streams, kqueue-backed poll on Orbis.
+3. **M3 mostly done (v1.0.3)** — anonymous-memory subset, guest fd
+   table with Linux flag semantics, guest pipes (`pipe2`), readiness-based
+   epoll/eventfd, `uname`, `prctl`, and path-stat family demonstrated end-to-end;
+   remaining: sockets, signals, directory streams, kqueue-backed poll on Orbis.
 4. **M4 done at feasibility level** — bionic ELF inspection + auxv/
    initial-stack construction tested on host; full dynamic linker
    namespaces remain un-hosted.
 5. **M5 done at engine level** — in-process Binder RPC engine
    (handles, transactions, block-allocated buffers) tested on host; not
    wire-compatible with the kernel protocol and never claiming to be.
-6. **M6 done at inspection level** — APK structure probing (ZIP magic,
-   manifest/DEX/native-lib presence, honest package-name refusal);
-   launch research waits on M4/M5 runtime evidence.
+6. **M6 done at inspection level (v1.0.3)** — APK structure probing (ZIP
+   extraction, binary AXML AndroidManifest parsing for package name & SDK
+   levels, DEX/native-lib presence); launch research waits on M4/M5 runtime
+   evidence.

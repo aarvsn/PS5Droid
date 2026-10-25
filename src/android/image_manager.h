@@ -1,4 +1,4 @@
-// PS5Droid - Android image handling (read-only, no mounting).
+// PS5Droid - Android image and APK handling (read-only).
 //
 // PS5Droid cannot mount ext4 images on Orbis (no loop devices, no FUSE,
 // no ext4 driver - see docs/platform-constraints.md). What we CAN do
@@ -8,14 +8,15 @@
 //   * verify SHA-256 digests (Waydroid's OTA model hashes archives the
 //     same way; see tools/helpers/images.py in the waydroid repo),
 //   * probe ext4 superblocks directly from the image bytes without
-//     mounting.
-//
-// Mounting, extracting and running anything from these images is NOT
-// implemented and is reported as blocked by the runtime manager.
+//     mounting,
+//   * parse Android binary XML (AXML / AndroidManifest.xml) and APK archives,
+//   * parse Android system properties (build.prop).
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ps5droid {
@@ -50,13 +51,6 @@ struct ManifestCheck {
 ManifestCheck verify_manifest(const ImageManifest& manifest, const std::string& base_dir);
 
 // ext4 superblock probe (read-only, works without mounting).
-// Layout: superblock starts at byte 1024 of the image.
-//   +0x00 s_inodes_count      u32
-//   +0x04 s_blocks_count_lo   u32
-//   +0x18 s_log_block_size    u32   (block size = 1024 << value)
-//   +0x38 s_magic             u16   (0xEF53)
-//   +0x68 s_uuid              16 bytes
-//   +0x78 s_volume_name       16 bytes
 struct Ext4Probe {
     bool is_ext4 = false;
     uint32_t blocks_count = 0;
@@ -67,23 +61,51 @@ struct Ext4Probe {
 
 Ext4Probe probe_ext4(const std::string& image_path);
 
+// Android Binary XML (AXML) parser result.
+struct BinaryAxmlResult {
+    bool ok = false;
+    std::string package_name;
+    int min_sdk_version = 0;
+    int target_sdk_version = 0;
+    int version_code = 0;
+    std::string version_name;
+    size_t activity_count = 0;
+    std::string failure_note;
+};
+
+// Parses binary AXML (AndroidManifest.xml).
+BinaryAxmlResult parse_binary_axml(const uint8_t* data, size_t size);
+
 // Milestone 6: APK archive and AndroidManifest structure inspection.
 struct ApkInspection {
     bool is_apk = false;
     bool has_manifest = false;
     bool has_classes_dex = false;
     bool has_native_libs = false;
-    // Always empty in this release: binary AXML (AndroidManifest.xml) is
-    // a compiled XML format whose string-pool parsing is NOT implemented
-    // here, and the honesty policy forbids placeholder values. package_note
-    // records that limitation explicitly.
     std::string package_name;
+    int min_sdk_version = 0;
+    int target_sdk_version = 0;
+    int version_code = 0;
+    std::string version_name;
+    size_t activity_count = 0;
     std::string package_note;
     size_t file_count = 0;
     std::string failure_note;
 };
 
 ApkInspection inspect_apk(const std::string& apk_path);
+
+// Android system properties (build.prop) parser.
+struct BuildProp {
+    std::string release_version;
+    int sdk_version = 0;
+    std::string model;
+    std::string brand;
+    std::string build_id;
+    std::vector<std::pair<std::string, std::string>> all_properties;
+};
+
+BuildProp parse_build_prop(const std::string& text);
 
 } // namespace android
 } // namespace ps5droid

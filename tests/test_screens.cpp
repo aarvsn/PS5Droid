@@ -1,4 +1,4 @@
-// PS5Droid - screen content builder tests (v1.0.2).
+// PS5Droid - screen content builder tests (v1.0.3).
 //
 // The PS5 payload renders exactly what these builders produce, so the
 // content logic is pinned here on the host where it can actually run.
@@ -64,7 +64,7 @@ PS5DROID_TEST(matrix_screen_pages_and_counts) {
     CHECK_MSG(p0.page_count > 1, "matrix must be paged for a small budget");
     CHECK_MSG(p0.page == 0, "requested page echoed");
     CHECK_MSG(p0.lines.size() <= 6, "page respects the line budget");
-    CHECK_MSG(p0.lines[1].text.find("EMU 31") != std::string::npos,
+    CHECK_MSG(p0.lines[1].text.find("EMU 36") != std::string::npos,
               "summary must cite the release counts");
 
     ui::MatrixPage last = ui::matrix_screen_lines(matrix, 9999, 6);

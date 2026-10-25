@@ -4,6 +4,46 @@ All notable changes to PS5Droid are documented here. The project follows
 its honesty policy (docs/development.md, section 6): nothing in these
 notes claims console execution that has not happened.
 
+## [1.0.3] - 2026-10-22
+
+### Added (Android app & APK inspection)
+
+* **Android Binary XML (AXML / AndroidManifest.xml) parser.** Implemented
+  `parse_binary_axml` in `src/android/image_manager.cpp` to parse string
+  pools (UTF-8 and UTF-16LE) and XML tree element/attribute chunks. Extracts
+  real `package_name`, `min_sdk_version`, `target_sdk_version`,
+  `version_code`, `version_name`, and `activity_count` from binary
+  `AndroidManifest.xml` files.
+* **APK ZIP archive extraction.** Upgraded `inspect_apk` to parse ZIP
+  headers, extract `AndroidManifest.xml` (with STORE/uncompressed and DEFLATE
+  decompression support), and populate `ApkInspection` with real package and SDK
+  metadata.
+* **Android system properties (`build.prop`) parser.** Added `parse_build_prop`
+  to parse Android system configuration files (`ro.build.version.release`,
+  `ro.build.version.sdk`, `ro.product.model`, `ro.product.brand`,
+  `ro.build.display.id`).
+
+### Added (Linux ABI surface, +5 syscalls)
+
+The emulated surface grew from 31 to 36 syscalls (79 tracked total):
+`uname` (synthesizes Linux x86_64 kernel identity), `prctl` (emulates
+`PR_SET_NAME` / `PR_GET_NAME`), `pipe2` (in-process guest unidirectional
+pipes), `dup3` (fd duplicate with flags), and `readlink` (host symlink and
+`/proc/self/exe` resolution).
+
+### Added (Guest fd table)
+
+* **In-process guest pipe implementation.** Added `create_pipe` and
+  `PipeFdEntry` in `CompatFdTable` to provide thread-safe unidirectional pipe
+  buffers, powering `kPipe2` (syscall 293) and epoll readiness monitoring.
+
+### Changed (docs / project)
+
+* Project version bumped to `1.0.3` in `src/version.h`, `CMakeLists.txt`,
+  and documentation files.
+* Updated Linux ABI compatibility matrix counts across README, architecture,
+  platform constraints docs, and unit tests (`matrix_counts_match_v1_0_3_release`).
+
 ## [1.0.2] - 2026-10-22
 
 ### Fixed (correctness)
