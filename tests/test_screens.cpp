@@ -64,7 +64,7 @@ PS5DROID_TEST(matrix_screen_pages_and_counts) {
     CHECK_MSG(p0.page_count > 1, "matrix must be paged for a small budget");
     CHECK_MSG(p0.page == 0, "requested page echoed");
     CHECK_MSG(p0.lines.size() <= 6, "page respects the line budget");
-    CHECK_MSG(p0.lines[1].text.find("EMU 36") != std::string::npos,
+    CHECK_MSG(p0.lines[1].text.find("EMU 42") != std::string::npos,
               "summary must cite the release counts");
 
     ui::MatrixPage last = ui::matrix_screen_lines(matrix, 9999, 6);

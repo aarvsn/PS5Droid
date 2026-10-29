@@ -48,6 +48,8 @@ const SyscallInfo kSyscallTable[] = {
      "writes guest iovecs to guest fds (iovec pointers are host pointers)"},
     {kDup3, "dup3", kEmulated, "duplicates guest fds with flags to target index"},
     {kPipe2, "pipe2", kEmulated, "creates in-process guest pipe fds in fd table"},
+    {kFcntl, "fcntl", kEmulated,
+     "fcntl F_GETFD/F_SETFD (FD_CLOEXEC), F_GETFL/F_SETFL, F_DUPFD/_CLOEXEC in guest fd table"},
 
     // --- path / filesystem family (host stat/stdio backed) -----------------
     {kStat, "stat", kEmulated, "guest path stat via host stat(2); StatBuf is the guest layout"},
@@ -55,6 +57,8 @@ const SyscallInfo kSyscallTable[] = {
     {kGetcwd, "getcwd", kEmulated, "returns the host process cwd (single-process model)"},
     {kMkdir, "mkdir", kEmulated, "mkdir via host mkdir(2); mode honored"},
     {kUnlink, "unlink", kEmulated, "unlink via host unlink(2)"},
+    {kUnlinkat, "unlinkat", kEmulated,
+     "AT_FDCWD only; file unlink or directory rmdir (AT_REMOVEDIR)"},
     {kReadlink, "readlink", kEmulated, "reads link via host readlink(2) or /proc/self/exe"},
     {kGettimeofday, "gettimeofday", kEmulated, "host realtime clock, timeval layout"},
     {kClockGetres, "clock_getres", kEmulated, "REALTIME/MONOTONIC resolution reported as 1 ns"},
@@ -66,6 +70,10 @@ const SyscallInfo kSyscallTable[] = {
     // --- system identity & process control --------------------------------
     {kUname, "uname", kEmulated, "synthesizes Linux kernel utsname identity for guest ABI"},
     {kPrctl, "prctl", kEmulated, "emulates PR_SET_NAME and PR_GET_NAME for process/thread names"},
+    {kGetuid, "getuid", kEmulated, "single-process guest identity (UID 1000)"},
+    {kGetgid, "getgid", kEmulated, "single-process guest identity (GID 1000)"},
+    {kGeteuid, "geteuid", kEmulated, "single-process guest identity (EUID 1000)"},
+    {kGetegid, "getegid", kEmulated, "single-process guest identity (EGID 1000)"},
 
     // --- honestly unsupported; these are the hard blockers -----------------
     {kRtSigaction, "rt_sigaction", kUnsupported, "Linux signal ABI not implemented on Orbis"},
@@ -86,13 +94,9 @@ const SyscallInfo kSyscallTable[] = {
     {kExit, "exit", kUnsupported, "thread exit path not implemented"},
     {kWait4, "wait4", kUnsupported, "no child processes exist in the emulation model"},
     {kKill, "kill", kUnsupported, "no signal delivery between processes"},
-    {kFcntl, "fcntl", kUnsupported, "guest fd flag storage not implemented"},
     {kFlock, "flock", kUnsupported, "advisory locks not implemented"},
     {kFsync, "fsync", kUnsupported, "write-through is not guaranteed in-process"},
     {kChdir, "chdir", kUnsupported, "would change the host process cwd; side-effectful, refused"},
-    {kGetuid, "getuid", kUnsupported, "identity model undecided; refusing to fake a uid"},
-    {kGetgid, "getgid", kUnsupported, "identity model undecided"},
-    {kGeteuid, "geteuid", kUnsupported, "identity model undecided"},
     {kGetppid, "getppid", kUnsupported, "no parent in emulation model"},
     {kSigaltstack, "sigaltstack", kUnsupported, "signal ABI not implemented"},
     {kPersonality, "personality", kUnsupported, "not implemented"},
@@ -104,7 +108,6 @@ const SyscallInfo kSyscallTable[] = {
     {kSetTidAddress, "set_tid_address", kUnsupported, "not implemented"},
     {kClockNanosleep, "clock_nanosleep", kUnsupported, "not implemented"},
     {kTgkill, "tgkill", kUnsupported, "signal ABI not implemented"},
-    {kUnlinkat, "unlinkat", kUnsupported, "dirfd-relative removal not wired (AT_FDCWD only paths)"},
     {kPpoll, "ppoll", kUnsupported, "poll layer not implemented"},
     {kSetRobustList, "set_robust_list", kUnsupported, "not implemented"},
     {kInotifyInit1, "inotify_init1", kUnsupported, "not implemented"},

@@ -461,9 +461,9 @@ int EpollFdEntry::wait(EpollEvent* out_events, int maxevents, int timeout_ms) {
 }
 
 CompatFdTable::CompatFdTable() {
-    table_[0] = std::make_shared<StreamFdEntry>(stdin);
-    table_[1] = std::make_shared<StreamFdEntry>(stdout);
-    table_[2] = std::make_shared<StreamFdEntry>(stderr);
+    table_[0] = TableSlot{std::make_shared<StreamFdEntry>(stdin), 0};
+    table_[1] = TableSlot{std::make_shared<StreamFdEntry>(stdout), 0};
+    table_[2] = TableSlot{std::make_shared<StreamFdEntry>(stderr), 0};
 }
 
 CompatFdTable::~CompatFdTable() {
@@ -471,8 +471,8 @@ CompatFdTable::~CompatFdTable() {
     table_.clear();
 }
 
-int CompatFdTable::allocate_fd_locked() {
-    int fd = 0;
+int CompatFdTable::allocate_fd_locked(int minfd) {
+    int fd = minfd < 0 ? 0 : minfd;
     while (table_.count(fd) != 0)
         ++fd;
     return fd;
@@ -517,14 +517,16 @@ int CompatFdTable::open_file(const std::string& path, int flags, int mode) {
 
     std::lock_guard<std::mutex> lock(mutex_);
     int fd = allocate_fd_locked();
-    table_[fd] = std::make_shared<FileFdEntry>(path, fp);
+    auto entry = std::make_shared<FileFdEntry>(path, fp);
+    entry->set_status_flags(flags);
+    table_[fd] = TableSlot{entry, 0};
     return fd;
 }
 
 int CompatFdTable::create_epoll() {
     std::lock_guard<std::mutex> lock(mutex_);
     int fd = allocate_fd_locked();
-    table_[fd] = std::make_shared<EpollFdEntry>(this);
+    table_[fd] = TableSlot{std::make_shared<EpollFdEntry>(this), 0};
     return fd;
 }
 
@@ -537,7 +539,8 @@ int CompatFdTable::create_eventfd(uint64_t initval, int flags) {
     int fd = allocate_fd_locked();
     auto entry = std::make_shared<EventFdEntry>(initval);
     entry->set_semaphore((flags & kEfdSemaphore) != 0);
-    table_[fd] = entry;
+    int fd_flags = (flags & kEfdCloexec) ? kFdCloexec : 0;
+    table_[fd] = TableSlot{entry, fd_flags};
     return fd;
 }
 
@@ -552,9 +555,9 @@ int CompatFdTable::create_pipe(int pipefds[2], int flags) {
 
     std::lock_guard<std::mutex> lock(mutex_);
     int rfd = allocate_fd_locked();
-    table_[rfd] = read_entry;
+    table_[rfd] = TableSlot{read_entry, 0};
     int wfd = allocate_fd_locked();
-    table_[wfd] = write_entry;
+    table_[wfd] = TableSlot{write_entry, 0};
 
     pipefds[0] = rfd;
     pipefds[1] = wfd;
@@ -621,13 +624,7 @@ bool CompatFdTable::fstat(int fd, StatBuf* statbuf) {
 }
 
 int CompatFdTable::dup(int oldfd) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto it = table_.find(oldfd);
-    if (it == table_.end())
-        return -1;
-    int newfd = allocate_fd_locked();
-    table_[newfd] = it->second;
-    return newfd;
+    return dup_minfd(oldfd, 0, false);
 }
 
 int CompatFdTable::dup2(int oldfd, int newfd) {
@@ -637,8 +634,54 @@ int CompatFdTable::dup2(int oldfd, int newfd) {
         return -1;
     if (oldfd == newfd)
         return newfd;
-    table_[newfd] = it->second;
+    table_[newfd] = TableSlot{it->second.entry, 0};
     return newfd;
+}
+
+int CompatFdTable::dup_minfd_locked(int oldfd, int minfd, bool cloexec) {
+    auto it = table_.find(oldfd);
+    if (it == table_.end() || minfd < 0)
+        return -linux_abi::kEbadf;
+    int newfd = allocate_fd_locked(minfd);
+    int fd_flags = cloexec ? linux_abi::kFdCloexec : 0;
+    table_[newfd] = TableSlot{it->second.entry, fd_flags};
+    return newfd;
+}
+
+int CompatFdTable::dup_minfd(int oldfd, int minfd, bool cloexec) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return dup_minfd_locked(oldfd, minfd, cloexec);
+}
+
+int CompatFdTable::fcntl(int fd, int cmd, uint64_t arg) {
+    using namespace linux_abi;
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = table_.find(fd);
+    if (it == table_.end())
+        return -kEbadf;
+
+    switch (cmd) {
+    case kFDupfd:
+        return dup_minfd_locked(fd, static_cast<int>(arg), false);
+    case kFDupfdCloexec:
+        return dup_minfd_locked(fd, static_cast<int>(arg), true);
+    case kFGetfd:
+        return it->second.fd_flags;
+    case kFSetfd:
+        it->second.fd_flags = static_cast<int>(arg) & kFdCloexec;
+        return 0;
+    case kFGetfl:
+        return it->second.entry->status_flags();
+    case kFSetfl: {
+        int old_fl = it->second.entry->status_flags();
+        int modifiable = kOAppend | kONonblock;
+        int new_fl = (old_fl & ~modifiable) | (static_cast<int>(arg) & modifiable);
+        it->second.entry->set_status_flags(new_fl);
+        return 0;
+    }
+    default:
+        return -kEinval;
+    }
 }
 
 int CompatFdTable::close(int fd) {
@@ -646,7 +689,7 @@ int CompatFdTable::close(int fd) {
     auto it = table_.find(fd);
     if (it == table_.end())
         return -1;
-    it->second->close();
+    it->second.entry->close();
     table_.erase(it);
     return 0;
 }
@@ -656,7 +699,7 @@ std::shared_ptr<FdEntry> CompatFdTable::get(int fd) {
     auto it = table_.find(fd);
     if (it == table_.end())
         return nullptr;
-    return it->second;
+    return it->second.entry;
 }
 
 } // namespace compat

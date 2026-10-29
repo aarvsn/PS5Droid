@@ -562,6 +562,17 @@ ApkInspection inspect_apk(const std::string& apk_path) {
             res.has_classes_dex = true;
         } else if (fname.rfind("lib/", 0) == 0 && fname.find(".so") != std::string::npos) {
             res.has_native_libs = true;
+            size_t slash1 = fname.find('/');
+            if (slash1 != std::string::npos) {
+                size_t slash2 = fname.find('/', slash1 + 1);
+                if (slash2 != std::string::npos) {
+                    std::string abi = fname.substr(slash1 + 1, slash2 - slash1 - 1);
+                    if (!abi.empty() && std::find(res.native_abis.begin(), res.native_abis.end(),
+                                                  abi) == res.native_abis.end()) {
+                        res.native_abis.push_back(abi);
+                    }
+                }
+            }
         }
 
         size_t next_pos = pos + 30 + fn_len + extra_len + comp_size;

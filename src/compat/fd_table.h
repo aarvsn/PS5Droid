@@ -76,15 +76,25 @@ class FdEntry {
     // Default: always ready for read and write (regular files/streams).
     virtual uint32_t readiness() const { return linux_abi::kEpollIn | linux_abi::kEpollOut; }
 
+    int status_flags() const { return status_flags_; }
+    void set_status_flags(int flags) { status_flags_ = flags; }
+
   protected:
     static void set_err(int* err, int value) {
         if (err != nullptr)
             *err = value;
     }
+
+    int status_flags_ = 0;
 };
 
 class CompatFdTable {
   public:
+    struct TableSlot {
+        std::shared_ptr<FdEntry> entry;
+        int fd_flags = 0; // e.g. Linux kFdCloexec
+    };
+
     CompatFdTable();
     ~CompatFdTable();
 
@@ -112,15 +122,18 @@ class CompatFdTable {
 
     int dup(int oldfd);
     int dup2(int oldfd, int newfd);
+    int dup_minfd(int oldfd, int minfd, bool cloexec = false);
+    int fcntl(int fd, int cmd, uint64_t arg);
     int close(int fd);
 
     std::shared_ptr<FdEntry> get(int fd);
 
   private:
-    int allocate_fd_locked();
+    int allocate_fd_locked(int minfd = 0);
+    int dup_minfd_locked(int oldfd, int minfd, bool cloexec);
 
     std::mutex mutex_;
-    std::unordered_map<int, std::shared_ptr<FdEntry>> table_;
+    std::unordered_map<int, TableSlot> table_;
 };
 
 } // namespace compat

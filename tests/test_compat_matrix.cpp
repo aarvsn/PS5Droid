@@ -19,7 +19,7 @@ PS5DROID_TEST(table_entries_valid) {
     CHECK_MSG(kSyscallTableSize >= 70, "table suspiciously small");
 }
 
-PS5DROID_TEST(matrix_counts_match_v1_0_3_release) {
+PS5DROID_TEST(matrix_counts_match_v1_0_4_release) {
     int emulated = 0, partial = 0, unsupported = 0;
     for (int i = 0; i < kSyscallTableSize; ++i) {
         switch (kSyscallTable[i].support) {
@@ -34,10 +34,10 @@ PS5DROID_TEST(matrix_counts_match_v1_0_3_release) {
             break;
         }
     }
-    CHECK_MSG(emulated == 36, "36 emulated syscalls in v1.0.3");
-    CHECK_MSG(partial == 4, "4 partial syscalls in v1.0.3");
-    CHECK_MSG(unsupported == 39, "39 unsupported syscalls in v1.0.3");
-    CHECK_MSG(kSyscallTableSize == 79, "79 tracked syscalls in v1.0.3");
+    CHECK_MSG(emulated == 42, "42 emulated syscalls in v1.0.4");
+    CHECK_MSG(partial == 4, "4 partial syscalls in v1.0.4");
+    CHECK_MSG(unsupported == 34, "34 unsupported syscalls in v1.0.4");
+    CHECK_MSG(kSyscallTableSize == 80, "80 tracked syscalls in v1.0.4");
 }
 
 PS5DROID_TEST(names_resolve) {
@@ -50,6 +50,10 @@ PS5DROID_TEST(names_resolve) {
     CHECK_MSG(strcmp(syscall_name(kPipe2), "pipe2") == 0, "pipe2 tracked");
     CHECK_MSG(strcmp(syscall_name(kUname), "uname") == 0, "uname tracked");
     CHECK_MSG(strcmp(syscall_name(kPrctl), "prctl") == 0, "prctl tracked");
+    CHECK_MSG(strcmp(syscall_name(kFcntl), "fcntl") == 0, "fcntl tracked");
+    CHECK_MSG(strcmp(syscall_name(kGetuid), "getuid") == 0, "getuid tracked");
+    CHECK_MSG(strcmp(syscall_name(kGetegid), "getegid") == 0, "getegid tracked");
+    CHECK_MSG(strcmp(syscall_name(kUnlinkat), "unlinkat") == 0, "unlinkat tracked");
     CHECK_MSG(syscall_name(9999) == nullptr, "unknown must be null");
     CHECK_MSG(syscall_name(kOpen) != nullptr, "open must be tracked");
 }

@@ -70,6 +70,47 @@ PS5DROID_TEST(fd_table_lowest_free_allocation) {
     ps5droid::platform::remove_file(c);
 }
 
+PS5DROID_TEST(fd_table_fcntl_and_flags) {
+    using namespace ps5droid::linux_abi;
+    CompatFdTable table;
+    std::string path = "test_fcntl.tmp";
+    int fd = table.open_file(path, kOCreat | kOTrunc | kORdwr, 0644);
+    CHECK_MSG(fd >= 3, "open_file failed");
+
+    // Descriptor flags (FD_CLOEXEC)
+    CHECK_MSG(table.fcntl(fd, kFGetfd, 0) == 0, "FD_CLOEXEC initially 0");
+    CHECK_MSG(table.fcntl(fd, kFSetfd, kFdCloexec) == 0, "F_SETFD failed");
+    CHECK_MSG(table.fcntl(fd, kFGetfd, 0) == kFdCloexec, "FD_CLOEXEC set");
+
+    // F_DUPFD (minfd)
+    int dup_fd = table.fcntl(fd, kFDupfd, 10);
+    CHECK_MSG(dup_fd >= 10, "F_DUPFD minfd requirement");
+    CHECK_MSG(table.fcntl(dup_fd, kFGetfd, 0) == 0, "dup clears FD_CLOEXEC");
+
+    // F_DUPFD_CLOEXEC
+    int dup_cloexec = table.fcntl(fd, kFDupfdCloexec, 20);
+    CHECK_MSG(dup_cloexec >= 20, "F_DUPFD_CLOEXEC minfd requirement");
+    CHECK_MSG(table.fcntl(dup_cloexec, kFGetfd, 0) == kFdCloexec,
+              "F_DUPFD_CLOEXEC sets FD_CLOEXEC");
+
+    // Status flags (O_APPEND / O_NONBLOCK)
+    int fl = table.fcntl(fd, kFGetfl, 0);
+    CHECK_MSG((fl & kOAccmode) == kORdwr, "O_RDWR status flag");
+    CHECK_MSG(table.fcntl(fd, kFSetfl, fl | kONonblock | kOAppend) == 0, "F_SETFL failed");
+    int new_fl = table.fcntl(fd, kFGetfl, 0);
+    CHECK_MSG((new_fl & kONonblock) != 0, "O_NONBLOCK set");
+    CHECK_MSG((new_fl & kOAppend) != 0, "O_APPEND set");
+
+    // Modifying status flags on the open file description reflects on dups
+    CHECK_MSG((table.fcntl(dup_fd, kFGetfl, 0) & kONonblock) != 0,
+              "status flags shared across dups");
+
+    table.close(fd);
+    table.close(dup_fd);
+    table.close(dup_cloexec);
+    ps5droid::platform::remove_file(path);
+}
+
 PS5DROID_TEST(bionic_loader_hdr_and_stack) {
     // Construct fake ELF64 header
     uint8_t elf_bytes[128] = {0};

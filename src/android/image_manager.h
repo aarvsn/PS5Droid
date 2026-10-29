@@ -82,6 +82,7 @@ struct ApkInspection {
     bool has_manifest = false;
     bool has_classes_dex = false;
     bool has_native_libs = false;
+    std::vector<std::string> native_abis;
     std::string package_name;
     int min_sdk_version = 0;
     int target_sdk_version = 0;
