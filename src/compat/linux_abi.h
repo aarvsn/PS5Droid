@@ -111,16 +111,32 @@ enum LinuxOpenFlag : int {
     kORdonly = 0x0,
     kOWronly = 0x1,
     kORdwr = 0x2,
-    kOCreat = 0x40,   // 0100
-    kOExcl = 0x80,    // 0200
-    kOTrunc = 0x200,  // 01000
-    kOAppend = 0x400, // 02000
+    kOCreat = 0x40,     // 0100
+    kOExcl = 0x80,      // 0200
+    kOTrunc = 0x200,    // 01000
+    kOAppend = 0x400,   // 02000
+    kONonblock = 0x800, // 020000
 };
 
-// openat/newfstatat dirfd special values and flags (Linux x86_64 UAPI).
+// openat/newfstatat/unlinkat dirfd special values and flags (Linux x86_64 UAPI).
 enum LinuxAtFlag : int {
     kAtFdcwd = -100,
     kAtSymlinkNofollow = 0x100,
+    kAtRemovedir = 0x200,
+};
+
+// fcntl(2) commands and descriptor flags (Linux x86_64 UAPI).
+enum LinuxFcntlCmd : int {
+    kFDupfd = 0,
+    kFGetfd = 1,
+    kFSetfd = 2,
+    kFGetfl = 3,
+    kFSetfl = 4,
+    kFDupfdCloexec = 1030,
+};
+
+enum LinuxFdFlag : int {
+    kFdCloexec = 1,
 };
 
 // eventfd2 flags (Linux x86_64 UAPI).
@@ -214,6 +230,7 @@ enum LinuxSyscall : int {
     kGetuid = 102,
     kGetgid = 104,
     kGeteuid = 107,
+    kGetegid = 108,
     kGetppid = 110,
     kSigaltstack = 132,
     kPersonality = 135,

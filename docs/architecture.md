@@ -101,22 +101,23 @@ numbers and executes a curated subset:
 * `futex` WAIT/WAKE (private) over `platform::Futex` (registry-based,
   wake-atomicity mirrors Linux's kernel-side check-and-enqueue);
 * a **guest fd table** (`compat::CompatFdTable`) with Linux `O_*` flag
-  values, lowest-free fd allocation, `dup`/`dup2`/`dup3`, in-process guest pipes (`pipe2`),
+  values, descriptor and status flag management via `fcntl`, lowest-free fd allocation, `dup`/`dup2`/`dup3`, in-process guest pipes (`pipe2`),
   positioned `pread64` that never moves the shared offset, eventfd counters
   honoring `EFD_SEMAPHORE` and the overflow ceiling, and `writev` gather output;
 * **readiness-based epoll**: `epoll_ctl` enforces Linux `EEXIST`/
   `ENOENT` semantics and `epoll_wait` reports only entries whose target
   fd is currently ready (eventfd counters and pipes drive readiness);
-* the path family `stat`/`newfstatat` (AT_FDCWD only), `access`,
+* the path family `stat`/`newfstatat`/`unlinkat` (AT_FDCWD only), `access`,
   `mkdir`, `unlink`, `readlink`, `getcwd` over host stat/stdio/symlink calls;
 * `uname` and `prctl` (process/thread naming);
+* user and group identity (`getuid`, `getgid`, `geteuid`, `getegid` returning single-process guest identity);
 * `getrandom` (PARTIAL) from the host `/dev/urandom`;
 * `write` to the process streams (fd 1/2);
 * `exit_group` flags the context.
 
 Everything else returns `-ENOSYS` with a *stable, explanatory note*
-sourced from the syscall table. The matrix (36 emulated / 4 partial /
-39 unsupported = 79 tracked at the v1.0.3 release) is data, not prose:
+sourced from the syscall table. The matrix (42 emulated / 4 partial /
+34 unsupported = 80 tracked at the v1.0.4 release) is data, not prose:
 `ps5droid-host --matrix` prints it, tests pin the counts, and the
 release documents repeat them.
 
@@ -173,9 +174,9 @@ documented in `development.md`; CI cross-builds the ELF on every push.
 1. **M1 done** — host foundation, tests, CI, PS5 build path (ELF-only).
 2. **M2 next** — run the same probes on a real console via elfldr and
    fill the [ASSUMPTION] items in `platform-constraints.md`.
-3. **M3 mostly done (v1.0.3)** — anonymous-memory subset, guest fd
-   table with Linux flag semantics, guest pipes (`pipe2`), readiness-based
-   epoll/eventfd, `uname`, `prctl`, and path-stat family demonstrated end-to-end;
+3. **M3 mostly done (v1.0.4)** — anonymous-memory subset, guest fd
+   table with Linux flag semantics, `fcntl`, guest pipes (`pipe2`), readiness-based
+   epoll/eventfd, `uname`, `prctl`, user/group IDs, and path-stat family demonstrated end-to-end;
    remaining: sockets, signals, directory streams, kqueue-backed poll on Orbis.
 4. **M4 done at feasibility level** — bionic ELF inspection + auxv/
    initial-stack construction tested on host; full dynamic linker
@@ -183,7 +184,7 @@ documented in `development.md`; CI cross-builds the ELF on every push.
 5. **M5 done at engine level** — in-process Binder RPC engine
    (handles, transactions, block-allocated buffers) tested on host; not
    wire-compatible with the kernel protocol and never claiming to be.
-6. **M6 done at inspection level (v1.0.3)** — APK structure probing (ZIP
+6. **M6 done at inspection level (v1.0.4)** — APK structure probing (ZIP
    extraction, binary AXML AndroidManifest parsing for package name & SDK
-   levels, DEX/native-lib presence); launch research waits on M4/M5 runtime
+   levels, native library ABI extraction, DEX/native-lib presence); launch research waits on M4/M5 runtime
    evidence.

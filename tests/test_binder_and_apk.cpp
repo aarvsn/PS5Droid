@@ -213,11 +213,31 @@ PS5DROID_TEST(apk_inspection_basic) {
     zip.insert(zip.end(), fn.begin(), fn.end());
     zip.insert(zip.end(), axml_data.begin(), axml_data.end());
 
+    // LFH for lib/x86_64/libnative.so
+    const std::string so_fn = "lib/x86_64/libnative.so";
+    const std::string so_data = "dummy so payload";
+    push32(0x04034b50);
+    push16(20);
+    push16(0);
+    push16(0);
+    push16(0);
+    push16(0);
+    push32(0);
+    push32(static_cast<uint32_t>(so_data.size()));
+    push32(static_cast<uint32_t>(so_data.size()));
+    push16(static_cast<uint16_t>(so_fn.size()));
+    push16(0);
+    zip.insert(zip.end(), so_fn.begin(), so_fn.end());
+    zip.insert(zip.end(), so_data.begin(), so_data.end());
+
     ps5droid::platform::write_file(path, zip.data(), zip.size());
 
     ApkInspection apk = inspect_apk(path);
     CHECK_MSG(apk.is_apk, "APK detection failed");
     CHECK_MSG(apk.has_manifest, "manifest entry must be detected");
+    CHECK_MSG(apk.has_native_libs, "native libs should be detected");
+    CHECK_MSG(apk.native_abis.size() == 1 && apk.native_abis[0] == "x86_64",
+              "native ABI x86_64 should be extracted");
     CHECK_MSG(apk.package_name == "org.ps5droid.sample", "package name should be parsed from AXML");
     CHECK_MSG(apk.min_sdk_version == 21, "minSdkVersion mismatch");
     CHECK_MSG(apk.target_sdk_version == 30, "targetSdkVersion mismatch");

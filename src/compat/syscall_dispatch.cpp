@@ -502,6 +502,46 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
     case kGettid:
         return ok(static_cast<int64_t>(platform::current_thread_id()), "platform thread id");
 
+    case kGetuid:
+    case kGetgid:
+    case kGeteuid:
+    case kGetegid:
+        return ok(1000, "single-process guest identity (UID/GID 1000)");
+
+    case kFcntl: {
+        int fd = static_cast<int>(static_cast<int64_t>(args.a[0]));
+        int cmd = static_cast<int>(args.a[1]);
+        uint64_t arg = args.a[2];
+        int rc = fd_table_->fcntl(fd, cmd, arg);
+        if (rc < 0)
+            return fail(-rc, "fcntl failed");
+        return ok(rc, "fcntl ok");
+    }
+
+    case kUnlinkat: {
+        int dirfd = static_cast<int>(static_cast<int64_t>(args.a[0]));
+        const char* path = reinterpret_cast<const char*>(args.a[1]);
+        int flags = static_cast<int>(args.a[2]);
+        if (dirfd != kAtFdcwd)
+            return fail(kEbadf, "only dirfd == AT_FDCWD is supported");
+        if (!path)
+            return fail(kEfault, "path is null");
+        if ((flags & ~kAtRemovedir) != 0)
+            return fail(kEinval, "unsupported unlinkat flags");
+
+        int rc;
+        if ((flags & kAtRemovedir) != 0) {
+            rc = ::rmdir(path);
+        } else {
+            rc = ::unlink(path);
+        }
+        if (rc != 0) {
+            int he = host_errno_to_linux();
+            return fail(he == 0 ? kEnoent : he, "unlinkat failed");
+        }
+        return ok(0, "unlinkat ok");
+    }
+
     case kClockGettime: {
         int clk = static_cast<int>(static_cast<int64_t>(args.a[0]));
         TimespecView* ts = reinterpret_cast<TimespecView*>(args.a[1]);

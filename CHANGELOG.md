@@ -4,6 +4,37 @@ All notable changes to PS5Droid are documented here. The project follows
 its honesty policy (docs/development.md, section 6): nothing in these
 notes claims console execution that has not happened.
 
+## [1.0.4] - 2026-10-22
+
+### Added (Linux ABI surface, +6 syscalls)
+
+The emulated surface grew from 36 to 42 syscalls (80 tracked total):
+`fcntl` (emulates `F_GETFD`/`F_SETFD` for `FD_CLOEXEC`, `F_GETFL`/`F_SETFL`
+for `O_NONBLOCK`/`O_APPEND`, `F_DUPFD`, `F_DUPFD_CLOEXEC`), user and group
+identity syscalls (`getuid`, `getgid`, `geteuid`, `getegid` returning single-process
+guest identity), and `unlinkat` (supporting `AT_FDCWD` file unlinking or `AT_REMOVEDIR`
+directory removal).
+
+### Added (Guest fd table)
+
+* **Per-descriptor flags and status flags in `CompatFdTable`.** `FD_CLOEXEC` is stored
+  per descriptor slot (cleared on `dup`, set via `F_DUPFD_CLOEXEC` or `F_SETFD`),
+  while file status flags (`O_NONBLOCK`, `O_APPEND`) are stored per open file entry
+  and modifiable via `fcntl(F_SETFL)`.
+
+### Added (Android APK inspection)
+
+* **Native library ABI extraction.** Upgraded `inspect_apk` in `image_manager.cpp`
+  to extract native library ABIs (e.g., `x86_64`, `arm64-v8a`) from `lib/<abi>/*.so`
+  entries in APK archives into `ApkInspection::native_abis`.
+
+### Changed (docs / project)
+
+* Project version bumped to `1.0.4` in `src/version.h`, `CMakeLists.txt`,
+  and documentation files.
+* Updated Linux ABI compatibility matrix counts across README, architecture,
+  platform constraints docs, and unit tests (`matrix_counts_match_v1_0_4_release`).
+
 ## [1.0.3] - 2026-10-22
 
 ### Added (Android app & APK inspection)

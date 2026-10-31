@@ -16,16 +16,16 @@ Waydroid is used as an *architectural reference* only (see
 code is imported. Low-level console facts come from the open-source
 [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk) ecosystem.
 
-## Current status (v1.0.3)
+## Current status (v1.0.4)
 
 | Area | Status |
 |---|---|
 | Portable platform layer (memory, threads, fs, IPC) | **Implemented and tested (host)** |
-| Linux ABI dispatch experiment (guest fd table with Linux `O_*` flags, readiness-based epoll/eventfd, guest pipes, mmap/brk/futex, path-stat family, writev, uname, prctl, getrandom) | **Implemented and tested (host)** |
-| Compatibility matrix (79 syscalls: 36 emulated / 4 partial / 39 unsupported) | **Implemented and tested (host)** |
+| Linux ABI dispatch experiment (guest fd table with Linux `O_*` flags, `fcntl`, readiness-based epoll/eventfd, guest pipes, mmap/brk/futex, path-stat family, writev, uname, prctl, getuid/getgid, getrandom) | **Implemented and tested (host)** |
+| Compatibility matrix (80 syscalls: 42 emulated / 4 partial / 34 unsupported) | **Implemented and tested (host)** |
 | Capability probes + runtime manager with structured blockers | **Implemented and tested (host)** |
 | Android image manifest + SHA-256 + read-only ext4 superblock probe + build.prop parser | **Implemented and tested (host)** |
-| APK inspection (binary AXML manifest parsing, ZIP entry extraction, package name & SDK levels) | **Implemented and tested (host)** |
+| APK inspection (binary AXML manifest parsing, ZIP entry extraction, native ABI detection, package name & SDK levels) | **Implemented and tested (host)** |
 | Launcher UI model + 8x8 framebuffer font + shared screen builders | **Implemented and tested (host)** |
 | Native PS5 payload (`ps5droid.elf`, video-out + pad + probe/status/matrix/about screens) | **Implemented, NOT tested on console** |
 | PS5 PKG packaging | **Not implemented** (ELF-payload path only) |
@@ -54,8 +54,8 @@ app/main.cpp (host CLI)          app/ps5_main.cpp (PS5 payload)
   provenance-documented firmware declarations.
 * **compat/** — accepts Linux x86_64 syscall numbers and executes an
   honestly classified subset (anonymous memory, clocks, futex wait/wake,
-  a guest fd table with Linux `O_*` flag values, guest pipes, readiness-based
-  epoll/eventfd, path stat family, writev, uname, prctl, getrandom); everything else
+  a guest fd table with Linux `O_*` flag values, `fcntl`, guest pipes, readiness-based
+  epoll/eventfd, path stat family, writev, uname, prctl, getuid/getgid, getrandom); everything else
   returns `-ENOSYS` with an explanation. The verified
   Linux→FreeBSD number mapping (e.g. mmap 9→477) is data in
   `src/compat/linux_abi.h`.

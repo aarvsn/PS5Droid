@@ -171,7 +171,7 @@ PS5DROID_TEST(write_passthrough) {
 PS5DROID_TEST(honest_enosys_for_blockers) {
     CompatMemory mem;
     SyscallDispatch d(&mem);
-    const int blocked[] = {kClone, kFork, kExecve, kSocket, kGetuid};
+    const int blocked[] = {kClone, kFork, kExecve, kSocket, kGetppid};
     for (int nr : blocked) {
         SyscallArgs a{};
         DispatchResult r = d.invoke(nr, a);
@@ -179,6 +179,58 @@ PS5DROID_TEST(honest_enosys_for_blockers) {
         snprintf(msg, sizeof(msg), "syscall %d must be ENOSYS", nr);
         CHECK_MSG(r.ret == -1 && r.err == kEnosys && !r.supported, msg);
     }
+}
+
+PS5DROID_TEST(fcntl_and_identity_and_unlinkat_dispatch) {
+    CompatMemory mem;
+    CompatFdTable fdt;
+    SyscallDispatch d(&mem, &fdt);
+
+    // Identity syscalls (getuid, getgid, geteuid, getegid)
+    CHECK_MSG(d.invoke(kGetuid, {}).ret == 1000, "getuid returns 1000");
+    CHECK_MSG(d.invoke(kGetgid, {}).ret == 1000, "getgid returns 1000");
+    CHECK_MSG(d.invoke(kGeteuid, {}).ret == 1000, "geteuid returns 1000");
+    CHECK_MSG(d.invoke(kGetegid, {}).ret == 1000, "getegid returns 1000");
+
+    // fcntl
+    std::string tmp = "ps5droid_fcntl_disp.tmp";
+    SyscallArgs oa{};
+    oa.a[0] = reinterpret_cast<uint64_t>(tmp.c_str());
+    oa.a[1] = kOCreat | kOTrunc | kORdwr;
+    int fd = static_cast<int>(d.invoke(kOpen, oa).ret);
+    CHECK_MSG(fd >= 3, "open failed");
+
+    SyscallArgs f_set{};
+    f_set.a[0] = fd;
+    f_set.a[1] = kFSetfd;
+    f_set.a[2] = kFdCloexec;
+    CHECK_MSG(d.invoke(kFcntl, f_set).ret == 0, "fcntl F_SETFD failed");
+
+    SyscallArgs f_get{};
+    f_get.a[0] = fd;
+    f_get.a[1] = kFGetfd;
+    CHECK_MSG(d.invoke(kFcntl, f_get).ret == kFdCloexec, "fcntl F_GETFD mismatch");
+
+    SyscallArgs cl{};
+    cl.a[0] = fd;
+    d.invoke(kClose, cl);
+
+    // unlinkat file
+    SyscallArgs un{};
+    un.a[0] = static_cast<uint64_t>(static_cast<int64_t>(kAtFdcwd));
+    un.a[1] = reinterpret_cast<uint64_t>(tmp.c_str());
+    un.a[2] = 0;
+    CHECK_MSG(d.invoke(kUnlinkat, un).ret == 0, "unlinkat file failed");
+
+    // unlinkat directory with AT_REMOVEDIR
+    std::string tmpdir = "ps5droid_unlinkat_dir";
+    ps5droid::platform::make_dir(tmpdir, 0755);
+
+    SyscallArgs undir{};
+    undir.a[0] = static_cast<uint64_t>(static_cast<int64_t>(kAtFdcwd));
+    undir.a[1] = reinterpret_cast<uint64_t>(tmpdir.c_str());
+    undir.a[2] = kAtRemovedir;
+    CHECK_MSG(d.invoke(kUnlinkat, undir).ret == 0, "unlinkat directory failed");
 }
 
 PS5DROID_TEST(uname_prctl_readlink_pipe2_dup3) {
