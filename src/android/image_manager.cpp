@@ -484,6 +484,19 @@ BinaryAxmlResult parse_binary_axml(const uint8_t* data, size_t size) {
                         } else if (attr_name == "targetSdkVersion") {
                             res.target_sdk_version = static_cast<int>(typed_val_data);
                         }
+                    } else if (tag_name == "application") {
+                        res.ok = true;
+                        if (attr_name == "label") {
+                            res.app_label = val_str;
+                        }
+                    } else if (tag_name == "uses-permission") {
+                        res.ok = true;
+                        if (attr_name == "name" && !val_str.empty()) {
+                            if (std::find(res.permissions.begin(), res.permissions.end(),
+                                          val_str) == res.permissions.end()) {
+                                res.permissions.push_back(val_str);
+                            }
+                        }
                     }
                 }
             }
@@ -607,6 +620,8 @@ ApkInspection inspect_apk(const std::string& apk_path) {
                 res.version_code = axml.version_code;
                 res.version_name = axml.version_name;
                 res.activity_count = axml.activity_count;
+                res.app_label = axml.app_label;
+                res.permissions = axml.permissions;
                 res.package_note = "parsed binary AXML from AndroidManifest.xml";
             } else {
                 res.package_note =

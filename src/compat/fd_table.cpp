@@ -105,6 +105,18 @@ class FileFdEntry : public FdEntry {
         return true;
     }
 
+    int fsync(int* err) override {
+        if (!fp_) {
+            set_err(err, linux_abi::kEbadf);
+            return -1;
+        }
+        if (fflush(fp_) != 0) {
+            set_err(err, linux_abi::kEio);
+            return -1;
+        }
+        return 0;
+    }
+
     void close() override {
         if (fp_) {
             fclose(fp_);
@@ -152,6 +164,17 @@ class StreamFdEntry : public FdEntry {
         memset(statbuf, 0, sizeof(*statbuf));
         statbuf->st_mode = 0020666; // S_IFCHR
         return true;
+    }
+    int fsync(int* err) override {
+        if (!stream_) {
+            set_err(err, linux_abi::kEbadf);
+            return -1;
+        }
+        if (fflush(stream_) != 0) {
+            set_err(err, linux_abi::kEio);
+            return -1;
+        }
+        return 0;
     }
     void close() override { stream_ = nullptr; }
 
@@ -651,6 +674,15 @@ int CompatFdTable::dup_minfd_locked(int oldfd, int minfd, bool cloexec) {
 int CompatFdTable::dup_minfd(int oldfd, int minfd, bool cloexec) {
     std::lock_guard<std::mutex> lock(mutex_);
     return dup_minfd_locked(oldfd, minfd, cloexec);
+}
+
+int CompatFdTable::fsync(int fd, int* err) {
+    auto entry = get(fd);
+    if (!entry) {
+        set_table_err(err, linux_abi::kEbadf);
+        return -1;
+    }
+    return entry->fsync(err);
 }
 
 int CompatFdTable::fcntl(int fd, int cmd, uint64_t arg) {

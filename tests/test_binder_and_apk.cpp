@@ -48,8 +48,19 @@ std::vector<uint8_t> create_synthetic_axml(const std::string& pkg_name, int min_
     push32(0); // placeholder for root size
 
     // String pool strings
-    std::vector<std::string> strings = {"manifest",      "package",          pkg_name,  "uses-sdk",
-                                        "minSdkVersion", "targetSdkVersion", "activity"};
+    std::vector<std::string> strings = {"manifest",
+                                        "package",
+                                        pkg_name,
+                                        "uses-sdk",
+                                        "minSdkVersion",
+                                        "targetSdkVersion",
+                                        "activity",
+                                        "application",
+                                        "label",
+                                        "TestApp",
+                                        "uses-permission",
+                                        "name",
+                                        "android.permission.INTERNET"};
     std::vector<uint32_t> offsets;
     std::vector<uint8_t> str_bytes;
 
@@ -142,6 +153,52 @@ std::vector<uint8_t> create_synthetic_axml(const std::string& pkg_name, int min_
     push16(0);
     push16(0);
     push16(0);
+
+    // Start Element: <application label="TestApp">
+    push16(0x0102);
+    push16(16);
+    push32(36 + 20); // 1 attr
+    push32(4);
+    push32(0xFFFFFFFFu);
+    push32(0xFFFFFFFFu);
+    push32(7); // "application"
+    push16(20);
+    push16(20);
+    push16(1); // 1 attr
+    push16(0);
+    push16(0);
+    push16(0);
+    // Attr 0: label="TestApp"
+    push32(0xFFFFFFFFu);
+    push32(8); // "label"
+    push32(9); // "TestApp"
+    push16(8);
+    data.push_back(0);
+    data.push_back(0x03); // TYPE_STRING
+    push32(9);            // "TestApp"
+
+    // Start Element: <uses-permission name="android.permission.INTERNET">
+    push16(0x0102);
+    push16(16);
+    push32(36 + 20); // 1 attr
+    push32(5);
+    push32(0xFFFFFFFFu);
+    push32(0xFFFFFFFFu);
+    push32(10); // "uses-permission"
+    push16(20);
+    push16(20);
+    push16(1); // 1 attr
+    push16(0);
+    push16(0);
+    push16(0);
+    // Attr 0: name="android.permission.INTERNET"
+    push32(0xFFFFFFFFu);
+    push32(11); // "name"
+    push32(12); // "android.permission.INTERNET"
+    push16(8);
+    data.push_back(0);
+    data.push_back(0x03); // TYPE_STRING
+    push32(12);
 
     // Patch root size
     uint32_t total = static_cast<uint32_t>(data.size());
@@ -241,6 +298,9 @@ PS5DROID_TEST(apk_inspection_basic) {
     CHECK_MSG(apk.package_name == "org.ps5droid.sample", "package name should be parsed from AXML");
     CHECK_MSG(apk.min_sdk_version == 21, "minSdkVersion mismatch");
     CHECK_MSG(apk.target_sdk_version == 30, "targetSdkVersion mismatch");
+    CHECK_MSG(apk.app_label == "TestApp", "app_label mismatch");
+    CHECK_MSG(apk.permissions.size() == 1 && apk.permissions[0] == "android.permission.INTERNET",
+              "permission mismatch");
     CHECK_MSG(apk.activity_count == 1, "activity count mismatch");
 
     ps5droid::platform::remove_file(path);

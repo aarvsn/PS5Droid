@@ -171,7 +171,7 @@ PS5DROID_TEST(write_passthrough) {
 PS5DROID_TEST(honest_enosys_for_blockers) {
     CompatMemory mem;
     SyscallDispatch d(&mem);
-    const int blocked[] = {kClone, kFork, kExecve, kSocket, kGetppid};
+    const int blocked[] = {kClone, kFork, kExecve, kSocket, kChdir};
     for (int nr : blocked) {
         SyscallArgs a{};
         DispatchResult r = d.invoke(nr, a);
@@ -179,6 +179,76 @@ PS5DROID_TEST(honest_enosys_for_blockers) {
         snprintf(msg, sizeof(msg), "syscall %d must be ENOSYS", nr);
         CHECK_MSG(r.ret == -1 && r.err == kEnosys && !r.supported, msg);
     }
+}
+
+PS5DROID_TEST(fsync_getppid_settid_nanosleep_dispatch) {
+    CompatMemory mem;
+    CompatFdTable fdt;
+    SyscallDispatch d(&mem, &fdt);
+
+    // getppid
+    DispatchResult ppid_res = d.invoke(kGetppid, {});
+    CHECK_MSG(ppid_res.ret == 1, "getppid must return 1");
+
+    // set_tid_address
+    uint32_t tid_word = 0;
+    SyscallArgs set_tid{};
+    set_tid.a[0] = reinterpret_cast<uint64_t>(&tid_word);
+    DispatchResult tid_res = d.invoke(kSetTidAddress, set_tid);
+    CHECK_MSG(tid_res.ret > 0, "set_tid_address returns thread id");
+
+    // fsync on regular file
+    std::string tmp = "ps5droid_fsync_disp.tmp";
+    SyscallArgs oa{};
+    oa.a[0] = reinterpret_cast<uint64_t>(tmp.c_str());
+    oa.a[1] = kOCreat | kOTrunc | kORdwr;
+    int fd = static_cast<int>(d.invoke(kOpen, oa).ret);
+    CHECK_MSG(fd >= 3, "open failed");
+
+    SyscallArgs wr{};
+    wr.a[0] = fd;
+    const char* txt = "fsync test payload";
+    wr.a[1] = reinterpret_cast<uint64_t>(txt);
+    wr.a[2] = strlen(txt);
+    CHECK_MSG(d.invoke(kWrite, wr).ret == static_cast<int64_t>(strlen(txt)), "write failed");
+
+    SyscallArgs fs{};
+    fs.a[0] = fd;
+    CHECK_MSG(d.invoke(kFsync, fs).ret == 0, "fsync file failed");
+
+    // fsync on stdout
+    SyscallArgs fs_stdout{};
+    fs_stdout.a[0] = 1;
+    CHECK_MSG(d.invoke(kFsync, fs_stdout).ret == 0, "fsync stdout failed");
+
+    // fsync on invalid fd
+    SyscallArgs fs_bad{};
+    fs_bad.a[0] = 999;
+    CHECK_MSG(d.invoke(kFsync, fs_bad).ret == -1, "fsync invalid fd must fail");
+
+    SyscallArgs cl{};
+    cl.a[0] = fd;
+    d.invoke(kClose, cl);
+    ps5droid::platform::remove_file(tmp);
+
+    // clock_nanosleep relative
+    struct {
+        int64_t tv_sec;
+        int64_t tv_nsec;
+    } req{0, 2000000}; // 2 ms
+    SyscallArgs cn{};
+    cn.a[0] = kClockMonotonic;
+    cn.a[1] = 0; // relative
+    cn.a[2] = reinterpret_cast<uint64_t>(&req);
+    cn.a[3] = 0;
+    uint64_t before = ps5droid::platform::monotonic_ns();
+    CHECK_MSG(d.invoke(kClockNanosleep, cn).ret == 0, "clock_nanosleep relative failed");
+    uint64_t after = ps5droid::platform::monotonic_ns();
+    CHECK_MSG(after >= before + 1000000, "clock_nanosleep must advance monotonic clock");
+
+    // clock_nanosleep invalid clock
+    cn.a[0] = 99;
+    CHECK_MSG(d.invoke(kClockNanosleep, cn).ret == -1, "clock_nanosleep invalid clock must fail");
 }
 
 PS5DROID_TEST(fcntl_and_identity_and_unlinkat_dispatch) {

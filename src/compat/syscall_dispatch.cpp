@@ -508,6 +508,24 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
     case kGetegid:
         return ok(1000, "single-process guest identity (UID/GID 1000)");
 
+    case kGetppid:
+        return ok(1, "single-process parent identity (PPID 1)");
+
+    case kSetTidAddress: {
+        return ok(static_cast<int64_t>(platform::current_thread_id()), "set_tid_address ok");
+    }
+
+    case kFsync: {
+        if (!fd_table_)
+            return fail(kEbadf, "no fd table");
+        int fd = static_cast<int>(static_cast<int64_t>(args.a[0]));
+        int err = 0;
+        int rc = fd_table_->fsync(fd, &err);
+        if (rc < 0)
+            return fail(err != 0 ? err : kEbadf, "fsync failed");
+        return ok(0, "fsync ok");
+    }
+
     case kFcntl: {
         int fd = static_cast<int>(static_cast<int64_t>(args.a[0]));
         int cmd = static_cast<int>(args.a[1]);
@@ -575,6 +593,36 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
             rem->tv_nsec = 0;
         }
         return ok(0, "slept");
+    }
+
+    case kClockNanosleep: {
+        int clk = static_cast<int>(static_cast<int64_t>(args.a[0]));
+        int flags = static_cast<int>(args.a[1]);
+        const TimespecView* req = reinterpret_cast<const TimespecView*>(args.a[2]);
+        TimespecView* rem = reinterpret_cast<TimespecView*>(args.a[3]);
+        if (req == nullptr)
+            return fail(kEfault, "timespec is null");
+        if (clk != kClockRealtime && clk != kClockMonotonic)
+            return fail(kEinval, "unsupported clock id for clock_nanosleep");
+        if (req->tv_sec < 0 || req->tv_nsec < 0 || req->tv_nsec > 999999999)
+            return fail(kEinval, "invalid timespec");
+
+        uint64_t req_ns = static_cast<uint64_t>(req->tv_sec) * 1000000000ull +
+                          static_cast<uint64_t>(req->tv_nsec);
+        if (flags & 1 /* TIMER_ABSTIME */) {
+            uint64_t now_ns =
+                (clk == kClockRealtime) ? platform::wallclock_ns() : platform::monotonic_ns();
+            if (req_ns > now_ns) {
+                platform::sleep_ns(req_ns - now_ns);
+            }
+        } else {
+            platform::sleep_ns(req_ns);
+        }
+        if (rem != nullptr) {
+            rem->tv_sec = 0;
+            rem->tv_nsec = 0;
+        }
+        return ok(0, "clock_nanosleep ok");
     }
 
     case kSchedYield:
