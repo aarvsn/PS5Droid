@@ -65,11 +65,13 @@ Ext4Probe probe_ext4(const std::string& image_path);
 struct BinaryAxmlResult {
     bool ok = false;
     std::string package_name;
+    std::string app_label;
     int min_sdk_version = 0;
     int target_sdk_version = 0;
     int version_code = 0;
     std::string version_name;
     size_t activity_count = 0;
+    std::vector<std::string> permissions;
     std::string failure_note;
 };
 
@@ -89,6 +91,8 @@ struct ApkInspection {
     int version_code = 0;
     std::string version_name;
     size_t activity_count = 0;
+    std::string app_label;
+    std::vector<std::string> permissions;
     std::string package_note;
     size_t file_count = 0;
     std::string failure_note;

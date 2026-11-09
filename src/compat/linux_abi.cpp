@@ -50,6 +50,7 @@ const SyscallInfo kSyscallTable[] = {
     {kPipe2, "pipe2", kEmulated, "creates in-process guest pipe fds in fd table"},
     {kFcntl, "fcntl", kEmulated,
      "fcntl F_GETFD/F_SETFD (FD_CLOEXEC), F_GETFL/F_SETFL, F_DUPFD/_CLOEXEC in guest fd table"},
+    {kFsync, "fsync", kEmulated, "synchronizes file and stream buffers in guest fd table"},
 
     // --- path / filesystem family (host stat/stdio backed) -----------------
     {kStat, "stat", kEmulated, "guest path stat via host stat(2); StatBuf is the guest layout"},
@@ -74,6 +75,11 @@ const SyscallInfo kSyscallTable[] = {
     {kGetgid, "getgid", kEmulated, "single-process guest identity (GID 1000)"},
     {kGeteuid, "geteuid", kEmulated, "single-process guest identity (EUID 1000)"},
     {kGetegid, "getegid", kEmulated, "single-process guest identity (EGID 1000)"},
+    {kGetppid, "getppid", kEmulated, "single-process parent context identity (PPID 1)"},
+    {kSetTidAddress, "set_tid_address", kEmulated,
+     "stores clear_child_tid pointer and returns guest thread id"},
+    {kClockNanosleep, "clock_nanosleep", kEmulated,
+     "high-resolution sleep against CLOCK_REALTIME / CLOCK_MONOTONIC"},
 
     // --- honestly unsupported; these are the hard blockers -----------------
     {kRtSigaction, "rt_sigaction", kUnsupported, "Linux signal ABI not implemented on Orbis"},
@@ -95,9 +101,7 @@ const SyscallInfo kSyscallTable[] = {
     {kWait4, "wait4", kUnsupported, "no child processes exist in the emulation model"},
     {kKill, "kill", kUnsupported, "no signal delivery between processes"},
     {kFlock, "flock", kUnsupported, "advisory locks not implemented"},
-    {kFsync, "fsync", kUnsupported, "write-through is not guaranteed in-process"},
     {kChdir, "chdir", kUnsupported, "would change the host process cwd; side-effectful, refused"},
-    {kGetppid, "getppid", kUnsupported, "no parent in emulation model"},
     {kSigaltstack, "sigaltstack", kUnsupported, "signal ABI not implemented"},
     {kPersonality, "personality", kUnsupported, "not implemented"},
     {kArchPrctl, "arch_prctl", kUnsupported, "not implemented"},
@@ -105,8 +109,6 @@ const SyscallInfo kSyscallTable[] = {
     {kSchedGetaffinity, "sched_getaffinity", kUnsupported, "not implemented"},
     {kGetdents64, "getdents64", kUnsupported,
      "directory streams not in the fd table; Linux dirent layout not emitted"},
-    {kSetTidAddress, "set_tid_address", kUnsupported, "not implemented"},
-    {kClockNanosleep, "clock_nanosleep", kUnsupported, "not implemented"},
     {kTgkill, "tgkill", kUnsupported, "signal ABI not implemented"},
     {kPpoll, "ppoll", kUnsupported, "poll layer not implemented"},
     {kSetRobustList, "set_robust_list", kUnsupported, "not implemented"},

@@ -70,6 +70,10 @@ class FdEntry {
     virtual int64_t write(const void* buf, size_t count, int64_t offset, int* err) = 0;
     virtual int64_t lseek(int64_t offset, int whence, int* err) = 0;
     virtual bool fstat(StatBuf* statbuf) = 0;
+    virtual int fsync(int* err) {
+        (void)err;
+        return 0;
+    }
     virtual void close() = 0;
 
     // Event mask currently reported to epoll (linux_abi::LinuxEpollEventBit).
@@ -124,6 +128,7 @@ class CompatFdTable {
     int dup2(int oldfd, int newfd);
     int dup_minfd(int oldfd, int minfd, bool cloexec = false);
     int fcntl(int fd, int cmd, uint64_t arg);
+    int fsync(int fd, int* err = nullptr);
     int close(int fd);
 
     std::shared_ptr<FdEntry> get(int fd);

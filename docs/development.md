@@ -1,6 +1,6 @@
 # Development Guide
 
-Current release: **v1.0.4** (see `CHANGELOG.md` and `src/version.h`).
+Current release: **v1.0.5** (see `CHANGELOG.md` and `src/version.h`).
 
 ## 1. Repository layout
 

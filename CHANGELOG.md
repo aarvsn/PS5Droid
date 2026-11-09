@@ -4,6 +4,35 @@ All notable changes to PS5Droid are documented here. The project follows
 its honesty policy (docs/development.md, section 6): nothing in these
 notes claims console execution that has not happened.
 
+## [1.0.5] - 2026-10-22
+
+### Added (Linux ABI surface, +4 syscalls)
+
+The emulated surface grew from 42 to 46 syscalls (80 tracked total):
+`fsync` (file and process stream buffer synchronization), `getppid`
+(single-process parent identity returning PPID 1), `set_tid_address`
+(clear_child_tid pointer registration returning guest thread id), and
+`clock_nanosleep` (high-resolution sleep against `CLOCK_REALTIME` and
+`CLOCK_MONOTONIC` supporting relative and absolute deadlines).
+
+### Added (Guest fd table)
+
+* **`fsync` support in `CompatFdTable`.** Implemented `fsync` method on
+  file and stream entries to ensure I/O buffers are flushed and synchronized.
+
+### Added (Android APK inspection)
+
+* **Permission and Application metadata extraction.** Extended `parse_binary_axml`
+  and `inspect_apk` to extract `<uses-permission>` tags into `ApkInspection::permissions`
+  and `<application android:label="...">` into `ApkInspection::app_label`.
+
+### Changed (docs / project)
+
+* Project version bumped to `1.0.5` in `src/version.h`, `CMakeLists.txt`,
+  and documentation files.
+* Updated Linux ABI compatibility matrix counts across README, architecture,
+  platform constraints docs, and unit tests (`matrix_counts_match_v1_0_5_release`).
+
 ## [1.0.4] - 2026-10-22
 
 ### Added (Linux ABI surface, +6 syscalls)
