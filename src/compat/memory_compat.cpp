@@ -93,6 +93,90 @@ MapResult CompatMemory::munmap(uintptr_t address, size_t length) {
             "experiment"};
 }
 
+MapResult CompatMemory::mremap(uintptr_t address, size_t old_length, size_t new_length, int flags) {
+    if (new_length == 0) {
+        return {nullptr, linux_abi::kEinval, "mremap new length is zero"};
+    }
+    if ((flags & ~(linux_abi::kMremapMaymove)) != 0) {
+        return {nullptr, linux_abi::kEinval,
+                "only MREMAP_MAYMOVE is supported (MREMAP_FIXED/DONTUNMAP refused)"};
+    }
+    for (size_t i = 0; i < mappings_.size(); ++i) {
+        Mapping& m = mappings_[i];
+        if (address != m.addr)
+            continue;
+        if (old_length != m.size) {
+            return {nullptr, linux_abi::kEinval, "old_size must match the tracked mapping size"};
+        }
+
+        size_t new_aligned = page_align_up_sz(new_length);
+        if (new_aligned <= m.size) {
+            size_t tail = m.size - new_aligned;
+            if (tail > 0 &&
+                !platform::unmap(reinterpret_cast<void*>(address + new_aligned), tail)) {
+                return {nullptr, linux_abi::kEnomem, "host unmap of the shrink tail failed"};
+            }
+            m.size = new_aligned;
+            return {reinterpret_cast<void*>(address), 0, "mapping shrunk in place"};
+        }
+
+        if ((flags & linux_abi::kMremapMaymove) == 0) {
+            return {nullptr, linux_abi::kEnomem,
+                    "growing requires MREMAP_MAYMOVE (no adjacent free-space tracking)"};
+        }
+
+        void* fresh = platform::map_anonymous(new_aligned);
+        if (fresh == nullptr) {
+            return {nullptr, linux_abi::kEnomem, "host map_anonymous failed for mremap grow"};
+        }
+        std::memcpy(fresh, reinterpret_cast<void*>(address), m.size);
+        if (!platform::unmap(reinterpret_cast<void*>(address), m.size)) {
+            platform::unmap(fresh, new_aligned);
+            return {nullptr, linux_abi::kEnomem, "host unmap of the old mapping failed"};
+        }
+        m.addr = reinterpret_cast<uintptr_t>(fresh);
+        m.size = new_aligned;
+        return {fresh, 0, "mapping moved and grown"};
+    }
+    return {nullptr, linux_abi::kEinval, "address is not the start of a tracked mapping"};
+}
+
+MapResult CompatMemory::madvise(uintptr_t address, size_t length, int advice) {
+    if (length == 0) {
+        return {nullptr, linux_abi::kEinval, "madvise length is zero"};
+    }
+    switch (advice) {
+    case linux_abi::kMadvNormal:
+    case linux_abi::kMadvRandom:
+    case linux_abi::kMadvSequential:
+    case linux_abi::kMadvWillneed:
+    case linux_abi::kMadvFree:
+    case linux_abi::kMadvDontfork:
+    case linux_abi::kMadvDontdump:
+    case linux_abi::kMadvDodump:
+        break;
+    case linux_abi::kMadvDontneed:
+        for (const Mapping& m : mappings_) {
+            if (address >= m.addr && address + length <= m.addr + m.size) {
+                // Anonymous private memory: Linux discards the pages and later
+                // faults return zeroes. Zeroing is the observable equivalent here.
+                std::memset(reinterpret_cast<void*>(address), 0, length);
+                return {reinterpret_cast<void*>(address), 0,
+                        "MADV_DONTNEED zeroed the anonymous private range"};
+            }
+        }
+        return {nullptr, linux_abi::kEnomem, "range is not a tracked mapping"};
+    default:
+        return {nullptr, linux_abi::kEinval, "unsupported madvise advice"};
+    }
+    for (const Mapping& m : mappings_) {
+        if (address >= m.addr && address + length <= m.addr + m.size) {
+            return {reinterpret_cast<void*>(address), 0, "madvise advice accepted (no-op)"};
+        }
+    }
+    return {nullptr, linux_abi::kEnomem, "range is not a tracked mapping"};
+}
+
 MapResult CompatMemory::mprotect(uintptr_t address, size_t length, int prot) {
     if (length == 0) {
         return {nullptr, linux_abi::kEinval, "mprotect length is zero"};

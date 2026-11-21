@@ -19,7 +19,7 @@ PS5DROID_TEST(table_entries_valid) {
     CHECK_MSG(kSyscallTableSize >= 70, "table suspiciously small");
 }
 
-PS5DROID_TEST(matrix_counts_match_v1_0_5_release) {
+PS5DROID_TEST(matrix_counts_match_v1_0_6_release) {
     int emulated = 0, partial = 0, unsupported = 0;
     for (int i = 0; i < kSyscallTableSize; ++i) {
         switch (kSyscallTable[i].support) {
@@ -34,10 +34,10 @@ PS5DROID_TEST(matrix_counts_match_v1_0_5_release) {
             break;
         }
     }
-    CHECK_MSG(emulated == 46, "46 emulated syscalls in v1.0.5");
-    CHECK_MSG(partial == 4, "4 partial syscalls in v1.0.5");
-    CHECK_MSG(unsupported == 30, "30 unsupported syscalls in v1.0.5");
-    CHECK_MSG(kSyscallTableSize == 80, "80 tracked syscalls in v1.0.5");
+    CHECK_MSG(emulated == 57, "57 emulated syscalls in v1.0.6");
+    CHECK_MSG(partial == 8, "8 partial syscalls in v1.0.6");
+    CHECK_MSG(unsupported == 15, "15 unsupported syscalls in v1.0.6");
+    CHECK_MSG(kSyscallTableSize == 80, "80 tracked syscalls in v1.0.6");
 }
 
 PS5DROID_TEST(names_resolve) {

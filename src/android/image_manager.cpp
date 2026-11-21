@@ -27,13 +27,16 @@ struct BitReader {
     const uint8_t* data;
     size_t size;
     size_t bit_off = 0;
+    bool failed = false;
 
     uint32_t read_bits(size_t count) {
         uint32_t val = 0;
         for (size_t i = 0; i < count; ++i) {
             size_t byte_idx = bit_off / 8;
-            if (byte_idx >= size)
+            if (byte_idx >= size) {
+                failed = true;
                 break;
+            }
             size_t bit_idx = bit_off % 8;
             uint32_t bit = (data[byte_idx] >> bit_idx) & 1;
             val |= (bit << i);
@@ -49,21 +52,194 @@ struct BitReader {
     }
 };
 
-// Inflates DEFLATE payload (STORED and FIXED Huffman blocks).
-bool inflate_deflate(const uint8_t* in, size_t in_size, std::vector<uint8_t>* out,
-                     size_t expected_out_size) {
+// Canonical Huffman tree for DEFLATE lit/len, distance and code-length
+// alphabets. Codes are inserted MSB-first, matching DEFLATE bit order.
+class HuffmanTree {
+  public:
+    bool build(const std::vector<uint8_t>& lengths, int max_bits) {
+        nodes_.clear();
+        nodes_.push_back(Node{});
+
+        int count[16] = {0};
+        for (uint8_t len : lengths) {
+            if (len > max_bits)
+                return false;
+            if (len > 0)
+                ++count[len];
+        }
+
+        int left = 1;
+        for (int bits = 1; bits <= max_bits; ++bits) {
+            left = (left << 1) - count[bits];
+            if (left < 0)
+                return false; // over-subscribed
+        }
+
+        int next_code[16] = {0};
+        int code = 0;
+        for (int bits = 1; bits <= max_bits; ++bits) {
+            code = (code + count[bits - 1]) << 1;
+            next_code[bits] = code;
+        }
+
+        for (size_t symbol = 0; symbol < lengths.size(); ++symbol) {
+            int len = lengths[symbol];
+            if (len == 0)
+                continue;
+            int current = next_code[len]++;
+            int node = 0;
+            for (int i = len - 1; i >= 0; --i) {
+                int bit = (current >> i) & 1;
+                int next = nodes_[static_cast<size_t>(node)].child[bit];
+                if (next < 0) {
+                    nodes_.push_back(Node{});
+                    next = static_cast<int>(nodes_.size()) - 1;
+                    nodes_[static_cast<size_t>(node)].child[bit] = next;
+                }
+                node = next;
+            }
+            if (nodes_[static_cast<size_t>(node)].symbol >= 0)
+                return false; // duplicate code
+            nodes_[static_cast<size_t>(node)].symbol = static_cast<int>(symbol);
+        }
+        return true;
+    }
+
+    int decode(BitReader& br) const {
+        int node = 0;
+        for (int depth = 0; depth < 16; ++depth) {
+            uint32_t bit = br.read_bits(1);
+            if (br.failed)
+                return -1;
+            int next = nodes_[static_cast<size_t>(node)].child[bit];
+            if (next < 0)
+                return -1;
+            node = next;
+            int symbol = nodes_[static_cast<size_t>(node)].symbol;
+            if (symbol >= 0)
+                return symbol;
+        }
+        return -1;
+    }
+
+  private:
+    struct Node {
+        int child[2] = {-1, -1};
+        int symbol = -1;
+    };
+    std::vector<Node> nodes_;
+};
+
+const uint16_t kLengthBase[] = {3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
+                                31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
+const uint8_t kLengthBits[] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
+                               2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
+const uint16_t kDistBase[] = {1,    2,    3,    4,    5,    7,    9,    13,    17,    25,
+                              33,   49,   65,   97,   129,  193,  257,  385,   513,   769,
+                              1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
+const uint8_t kDistBits[] = {0, 0, 0, 0, 1, 1, 2, 2,  3,  3,  4,  4,  5,  5,  6,
+                             6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
+
+bool inflate_dynamic_block(BitReader& br, std::vector<uint8_t>* out) {
+    uint32_t hlit = br.read_bits(5) + 257;
+    uint32_t hdist = br.read_bits(5) + 1;
+    uint32_t hclen = br.read_bits(4) + 4;
+    if (br.failed || hlit > 286 || hdist > 32)
+        return false;
+
+    static const uint8_t kCodeLengthOrder[19] = {16, 17, 18, 0, 8,  7, 9,  6, 10, 5,
+                                                 11, 4,  12, 3, 13, 2, 14, 1, 15};
+    std::vector<uint8_t> code_lengths(19, 0);
+    for (uint32_t i = 0; i < hclen; ++i)
+        code_lengths[kCodeLengthOrder[i]] = static_cast<uint8_t>(br.read_bits(3));
+    if (br.failed)
+        return false;
+
+    HuffmanTree code_tree;
+    if (!code_tree.build(code_lengths, 7))
+        return false;
+
+    std::vector<uint8_t> lengths;
+    lengths.reserve(hlit + hdist);
+    while (lengths.size() < hlit + hdist) {
+        int symbol = code_tree.decode(br);
+        if (symbol < 0)
+            return false;
+        if (symbol <= 15) {
+            lengths.push_back(static_cast<uint8_t>(symbol));
+        } else if (symbol == 16) {
+            if (lengths.empty())
+                return false;
+            uint8_t previous = lengths.back();
+            uint32_t repeat = 3 + br.read_bits(2);
+            for (uint32_t i = 0; i < repeat; ++i)
+                lengths.push_back(previous);
+        } else if (symbol == 17) {
+            uint32_t repeat = 3 + br.read_bits(3);
+            for (uint32_t i = 0; i < repeat; ++i)
+                lengths.push_back(0);
+        } else if (symbol == 18) {
+            uint32_t repeat = 11 + br.read_bits(7);
+            for (uint32_t i = 0; i < repeat; ++i)
+                lengths.push_back(0);
+        } else {
+            return false;
+        }
+        if (br.failed || lengths.size() > hlit + hdist)
+            return false;
+    }
+
+    std::vector<uint8_t> lit_lengths(lengths.begin(), lengths.begin() + hlit);
+    std::vector<uint8_t> dist_lengths(lengths.begin() + hlit, lengths.end());
+    HuffmanTree lit_tree;
+    HuffmanTree dist_tree;
+    if (!lit_tree.build(lit_lengths, 15) || !dist_tree.build(dist_lengths, 15))
+        return false;
+
+    while (true) {
+        int symbol = lit_tree.decode(br);
+        if (symbol < 0)
+            return false;
+        if (symbol == 256)
+            break;
+        if (symbol < 256) {
+            out->push_back(static_cast<uint8_t>(symbol));
+            continue;
+        }
+        if (symbol > 285)
+            return false;
+        uint32_t index = static_cast<uint32_t>(symbol - 257);
+        uint32_t match_len = kLengthBase[index] + br.read_bits(kLengthBits[index]);
+        int dist_symbol = dist_tree.decode(br);
+        if (br.failed || dist_symbol < 0 || dist_symbol >= 30)
+            return false;
+        uint32_t match_dist = kDistBase[dist_symbol] + br.read_bits(kDistBits[dist_symbol]);
+        if (br.failed || match_dist == 0 || match_dist > out->size())
+            return false;
+        size_t start_pos = out->size() - match_dist;
+        for (uint32_t m = 0; m < match_len; ++m)
+            out->push_back((*out)[start_pos + m]);
+    }
+    return !br.failed;
+}
+
+// Inflates DEFLATE payload (STORED, FIXED and DYNAMIC Huffman blocks).
+bool inflate_deflate_impl(const uint8_t* in, size_t in_size, std::vector<uint8_t>* out,
+                          size_t expected_out_size) {
     if (!in || in_size == 0 || !out)
         return false;
     out->clear();
     out->reserve(expected_out_size > 0 ? expected_out_size : 4096);
 
-    BitReader br{in, in_size, 0};
+    BitReader br{in, in_size, 0, false};
     bool last = false;
 
     while (!last) {
         uint32_t bfinal = br.read_bits(1);
         uint32_t btype = br.read_bits(2);
         last = (bfinal != 0);
+        if (br.failed)
+            return false;
 
         if (btype == 0) { // STORED
             br.align_byte();
@@ -116,7 +292,7 @@ bool inflate_deflate(const uint8_t* in, size_t in_size, std::vector<uint8_t>* ou
                     }
                 }
 
-                if (!found)
+                if (br.failed || !found)
                     return false;
                 if (code == 256)
                     break; // End of block
@@ -124,49 +300,44 @@ bool inflate_deflate(const uint8_t* in, size_t in_size, std::vector<uint8_t>* ou
                 if (code < 256) {
                     out->push_back(static_cast<uint8_t>(code));
                 } else if (code <= 285) {
-                    // Length code
-                    static const uint16_t len_base[] = {3,  4,  5,  6,   7,   8,   9,   10,  11, 13,
-                                                        15, 17, 19, 23,  27,  31,  35,  43,  51, 59,
-                                                        67, 83, 99, 115, 131, 163, 195, 227, 258};
-                    static const uint8_t len_bits[] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
-                                                       2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
                     uint32_t idx = code - 257;
                     if (idx >= 29)
                         return false;
-                    uint32_t match_len = len_base[idx] + br.read_bits(len_bits[idx]);
+                    uint32_t match_len = kLengthBase[idx] + br.read_bits(kLengthBits[idx]);
 
                     // Distance code (5 fixed bits for fixed huffman)
                     uint32_t dist_code = 0;
                     for (int d = 0; d < 5; ++d) {
                         dist_code = (dist_code << 1) | br.read_bits(1);
                     }
-                    static const uint16_t dist_base[] = {
-                        1,    2,    3,    4,    5,    7,    9,    13,    17,    25,
-                        33,   49,   65,   97,   129,  193,  257,  385,   513,   769,
-                        1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
-                    static const uint8_t dist_bits[] = {0, 0, 0,  0,  1,  1,  2,  2,  3,  3,
-                                                        4, 4, 5,  5,  6,  6,  7,  7,  8,  8,
-                                                        9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
-                    if (dist_code >= 30)
+                    if (br.failed || dist_code >= 30)
                         return false;
-                    uint32_t match_dist = dist_base[dist_code] + br.read_bits(dist_bits[dist_code]);
+                    uint32_t match_dist = kDistBase[dist_code] + br.read_bits(kDistBits[dist_code]);
 
-                    if (match_dist > out->size())
+                    if (match_dist == 0 || match_dist > out->size())
                         return false;
                     size_t start_pos = out->size() - match_dist;
-                    for (size_t m = 0; m < match_len; ++m) {
+                    for (uint32_t m = 0; m < match_len; ++m) {
                         out->push_back((*out)[start_pos + m]);
                     }
                 }
             }
+        } else if (btype == 2) { // DYNAMIC HUFFMAN
+            if (!inflate_dynamic_block(br, out))
+                return false;
         } else {
-            return false; // Dynamic Huffman or reserved
+            return false; // reserved block type
         }
     }
-    return true;
+    return !br.failed;
 }
 
 } // namespace
+
+bool inflate_deflate(const uint8_t* in, size_t in_size, std::vector<uint8_t>* out,
+                     size_t expected_out_size) {
+    return inflate_deflate_impl(in, in_size, out, expected_out_size);
+}
 
 ParseStatus parse_manifest(const std::string& text, ImageManifest* out) {
     if (out == nullptr)
@@ -604,8 +775,8 @@ ApkInspection inspect_apk(const std::string& apk_path) {
             axml_ptr = manifest_bytes.data();
             axml_sz = manifest_bytes.size();
         } else if (manifest_method == 8) { // DEFLATE
-            if (inflate_deflate(manifest_bytes.data(), manifest_bytes.size(), &decompressed,
-                                manifest_uncompressed_size)) {
+            if (inflate_deflate_impl(manifest_bytes.data(), manifest_bytes.size(), &decompressed,
+                                     manifest_uncompressed_size)) {
                 axml_ptr = decompressed.data();
                 axml_sz = decompressed.size();
             }

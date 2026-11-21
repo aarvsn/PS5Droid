@@ -120,31 +120,41 @@ Consequences (all encoded in `src/compat/linux_abi.h` and tested in
   paths are a known risk. The compat layer returns `-ENOSYS` for the
   signal family.
 
-## 6. Linux ABI compatibility matrix (v1.0.5)
+## 6. Linux ABI compatibility matrix (v1.0.6)
 
 Authoritative live output: `./build/ps5droid-host --matrix`. Summary of
 the 80 tracked syscalls:
 
-* **EMULATED (46)** — real in-process behavior, unit tested:
-  memory (`mmap`, `brk`), clocks (`clock_gettime`, `clock_getres`,
-  `gettimeofday`, `nanosleep`, `clock_nanosleep`, `sched_yield`), identity
-  (`getpid`, `gettid`, `getuid`, `getgid`, `geteuid`, `getegid`, `getppid`), system & process (`uname`, `prctl`, `set_tid_address`), the guest fd table family (`read`, `write`,
-  `writev`, `open`, `openat`, `close`, `lseek`, `pread64`, `fstat`,
-  `dup`, `dup2`, `dup3`, `pipe2`, `fcntl`, `fsync`, `epoll_create1`, `epoll_ctl`, `epoll_wait`,
-  `eventfd2`), the path family (`stat`, `newfstatat`, `unlinkat`, `access`, `readlink`,
-  `mkdir`, `unlink`, `getcwd`), and `exit_group`
-* **PARTIAL (4)** — implemented with documented restrictions:
+* **EMULATED (57)** — real in-process behavior, unit tested:
+  memory (`mmap`, `brk`, `madvise`), clocks (`clock_gettime`,
+  `clock_getres`, `gettimeofday`, `nanosleep`, `clock_nanosleep`,
+  `sched_yield`), identity (`getpid`, `gettid`, `getuid`, `getgid`,
+  `geteuid`, `getegid`, `getppid`), system & process (`uname`, `prctl`,
+  `personality`, `set_tid_address`, `set_robust_list`,
+  `sched_setaffinity`, `sched_getaffinity`, `wait4`, `exit`,
+  `exit_group`), the guest fd table family (`read`, `write`, `writev`,
+  `open`, `openat`, `close`, `lseek`, `pread64`, `fstat`, `dup`, `dup2`,
+  `dup3`, `pipe2`, `fcntl`, `fsync`, `flock`, `getdents64`,
+  `memfd_create`, `epoll_create1`, `epoll_ctl`, `epoll_wait`,
+  `eventfd2`), the path family (`stat`, `newfstatat`, `unlinkat`,
+  `access`, `readlink`, `mkdir`, `unlink`, `getcwd`, `chdir`)
+* **PARTIAL (8)** — implemented with documented restrictions:
   `munmap` (whole mappings only), `mprotect` (R/W only; PROT_EXEC not
-  granted), `futex` (WAIT/WAKE + PRIVATE flag only), `getrandom`
-  (host `/dev/urandom`; pool distinction not modeled)
-* **UNSUPPORTED (30)** — return `-ENOSYS` with an explanatory note. The
-  hard blockers remain `clone/fork/vfork/execve` (no process creation
-  for payloads), the socket and signal families, and directory streams.
+  granted), `mremap` (in-place shrink and `MREMAP_MAYMOVE` grow only),
+  `futex` (WAIT/WAKE + PRIVATE flag only), `getrandom` (host
+  `/dev/urandom`; pool distinction not modeled), `arch_prctl` (FS/GS
+  values recorded; no real TLS base switch), `ioctl` (`FIONREAD` only),
+  `ppoll` (readiness polling; no signal mask semantics)
+* **UNSUPPORTED (15)** — return `-ENOSYS` with an explanatory note. The
+  hard blockers remain `clone/fork/vfork/execve` (no process creation for
+  payloads), the socket family (`socket`, `connect`, `accept`, `bind`,
+  `listen`), the signal family (`rt_sigaction`, `rt_sigprocmask`, `kill`,
+  `sigaltstack`, `tgkill`), and `inotify_init1`.
 
 `getpid` returns the emulation-context id and `gettid` the platform
 thread id — single-process model, documented in
 `src/compat/syscall_dispatch.h`. The counts are pinned by
-`tests/test_compat_matrix.cpp` (`matrix_counts_match_v1_0_5_release`)
+`tests/test_compat_matrix.cpp` (`matrix_counts_match_v1_0_6_release`)
 so docs and code cannot drift silently.
 
 ## 7. Filesystem

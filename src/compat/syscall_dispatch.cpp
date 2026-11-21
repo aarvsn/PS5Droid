@@ -58,11 +58,58 @@ int host_errno_to_linux() {
     return errno;
 }
 
+std::string normalize_path(const std::string& in) {
+    bool absolute = !in.empty() && in[0] == '/';
+    std::vector<std::string> parts;
+    size_t start = 0;
+    while (start <= in.size()) {
+        size_t slash = in.find('/', start);
+        std::string part =
+            in.substr(start, slash == std::string::npos ? std::string::npos : slash - start);
+        if (!part.empty() && part != ".") {
+            if (part == "..") {
+                if (!parts.empty())
+                    parts.pop_back();
+            } else {
+                parts.push_back(part);
+            }
+        }
+        if (slash == std::string::npos)
+            break;
+        start = slash + 1;
+    }
+
+    std::string out = absolute ? "/" : "";
+    for (size_t i = 0; i < parts.size(); ++i) {
+        if (i > 0)
+            out += "/";
+        out += parts[i];
+    }
+    if (out.empty())
+        return absolute ? "/" : ".";
+    return out;
+}
+
 } // namespace
 
 SyscallDispatch::SyscallDispatch(CompatMemory* memory, CompatFdTable* fd_table)
     : memory_(memory), fd_table_(fd_table ? fd_table : &default_fd_table_),
-      context_id_(0x50534400ull | (platform::monotonic_ns() & 0xffffull)) {}
+      context_id_(0x50534400ull | (platform::monotonic_ns() & 0xffffull)) {
+    char cwd[4096];
+    if (::getcwd(cwd, sizeof(cwd)) != nullptr)
+        guest_cwd_ = normalize_path(cwd);
+    else
+        guest_cwd_ = "/";
+}
+
+std::string SyscallDispatch::resolve_path(const char* path) const {
+    if (path == nullptr)
+        return {};
+    std::string p(path);
+    if (p.empty() || p[0] != '/')
+        p = guest_cwd_ + "/" + p;
+    return normalize_path(p);
+}
 
 DispatchResult SyscallDispatch::ok(int64_t ret, const char* note) {
     return DispatchResult{ret, 0, true, note};
@@ -112,6 +159,27 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
         return ok(0, r.note);
     }
 
+    case kMremap: {
+        uintptr_t addr = static_cast<uintptr_t>(args.a[0]);
+        size_t old_len = static_cast<size_t>(args.a[1]);
+        size_t new_len = static_cast<size_t>(args.a[2]);
+        int flags = static_cast<int>(args.a[3]);
+        MapResult r = memory_->mremap(addr, old_len, new_len, flags);
+        if (r.address == nullptr)
+            return fail(r.linux_errno, r.note);
+        return ok(reinterpret_cast<int64_t>(r.address), r.note);
+    }
+
+    case kMadvise: {
+        uintptr_t addr = static_cast<uintptr_t>(args.a[0]);
+        size_t len = static_cast<size_t>(args.a[1]);
+        int advice = static_cast<int>(args.a[2]);
+        MapResult r = memory_->madvise(addr, len, advice);
+        if (r.address == nullptr)
+            return fail(r.linux_errno, r.note);
+        return ok(0, r.note);
+    }
+
     case kBrk: {
         uintptr_t req = static_cast<uintptr_t>(args.a[0]);
         BrkResult r = memory_->brk(req);
@@ -131,7 +199,8 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
         int mode = static_cast<int>(linux_nr == kOpenat ? args.a[3] : args.a[2]);
         if (!path)
             return fail(kEfault, "path is null");
-        int fd = fd_table_->open_file(path, flags, mode);
+        std::string resolved = resolve_path(path);
+        int fd = fd_table_->open_file(resolved, flags, mode);
         if (fd < 0)
             return fail(-fd, "open failed with guest errno");
         return ok(fd, "guest fd allocated (Linux O_* flags)");
@@ -250,13 +319,14 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
             return fail(kEfault, "path is null");
         if (!st)
             return fail(kEfault, "statbuf is null");
+        std::string resolved = resolve_path(path);
         struct stat host_st;
         int rc;
         if (linux_nr == kNewfstatat &&
             (static_cast<int>(static_cast<int64_t>(args.a[3])) & kAtSymlinkNofollow) != 0) {
-            rc = ::lstat(path, &host_st);
+            rc = ::lstat(resolved.c_str(), &host_st);
         } else {
-            rc = ::stat(path, &host_st);
+            rc = ::stat(resolved.c_str(), &host_st);
         }
         if (rc != 0) {
             int he = host_errno_to_linux();
@@ -274,7 +344,8 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
         if (mode != kFOk && mode != kROk && mode != kWOk && mode != kXOk && mode != (kROk | kWOk) &&
             mode != (kROk | kXOk) && mode != (kWOk | kXOk) && mode != (kROk | kWOk | kXOk))
             return fail(kEinval, "invalid access mode");
-        if (::access(path, mode) != 0) {
+        std::string resolved = resolve_path(path);
+        if (::access(resolved.c_str(), mode) != 0) {
             int he = host_errno_to_linux();
             return fail(he == 0 ? kEaccess : he, "access failed");
         }
@@ -286,7 +357,8 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
         int mode = static_cast<int>(args.a[1]);
         if (!path)
             return fail(kEfault, "path is null");
-        if (::mkdir(path, static_cast<mode_t>(mode)) != 0) {
+        std::string resolved = resolve_path(path);
+        if (::mkdir(resolved.c_str(), static_cast<mode_t>(mode)) != 0) {
             int he = host_errno_to_linux();
             return fail(he == 0 ? kEio : he, "mkdir failed");
         }
@@ -297,7 +369,8 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
         const char* path = reinterpret_cast<const char*>(args.a[0]);
         if (!path)
             return fail(kEfault, "path is null");
-        if (::unlink(path) != 0) {
+        std::string resolved = resolve_path(path);
+        if (::unlink(resolved.c_str()) != 0) {
             int he = host_errno_to_linux();
             return fail(he == 0 ? kEnoent : he, "unlink failed");
         }
@@ -312,19 +385,36 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
             return fail(kEfault, "null argument");
         if (bufsiz == 0)
             return fail(kEinval, "bufsiz must be positive");
-        if (std::strcmp(path, "/proc/self/exe") == 0) {
+        std::string resolved = resolve_path(path);
+        if (resolved == "/proc/self/exe") {
             const char* self = "ps5droid";
             size_t len = std::strlen(self);
             size_t copy_len = std::min(bufsiz, len);
             std::memcpy(buf, self, copy_len);
             return ok(static_cast<int64_t>(copy_len), "/proc/self/exe simulated link");
         }
-        ssize_t rc = ::readlink(path, buf, bufsiz);
+        ssize_t rc = ::readlink(resolved.c_str(), buf, bufsiz);
         if (rc < 0) {
             int he = host_errno_to_linux();
             return fail(he == 0 ? kEnoent : he, "readlink failed");
         }
         return ok(static_cast<int64_t>(rc), "host readlink ok");
+    }
+
+    case kChdir: {
+        const char* path = reinterpret_cast<const char*>(args.a[0]);
+        if (!path)
+            return fail(kEfault, "path is null");
+        std::string resolved = resolve_path(path);
+        struct stat host_st;
+        if (::stat(resolved.c_str(), &host_st) != 0) {
+            int he = host_errno_to_linux();
+            return fail(he == 0 ? kEnoent : he, "chdir path does not exist");
+        }
+        if (!S_ISDIR(host_st.st_mode))
+            return fail(kEnotdir, "chdir target is not a directory");
+        guest_cwd_ = resolved;
+        return ok(0, "guest cwd updated");
     }
 
     case kGetcwd: {
@@ -334,12 +424,10 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
             return fail(kEfault, "buffer is null");
         if (size == 0)
             return fail(kEinval, "size must be positive");
-        if (::getcwd(buf, size) == nullptr) {
-            int he = host_errno_to_linux();
-            return fail(he == kErange ? kErange : (he == 0 ? kErange : he),
-                        "cwd does not fit the buffer");
-        }
-        return ok(static_cast<int64_t>(strlen(buf)), "host process cwd");
+        if (size <= guest_cwd_.size())
+            return fail(kErange, "cwd does not fit the buffer");
+        std::memcpy(buf, guest_cwd_.c_str(), guest_cwd_.size() + 1);
+        return ok(static_cast<int64_t>(guest_cwd_.size()), "guest cwd");
     }
 
     case kGettimeofday: {
@@ -515,6 +603,84 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
         return ok(static_cast<int64_t>(platform::current_thread_id()), "set_tid_address ok");
     }
 
+    case kPersonality: {
+        unsigned long persona = static_cast<unsigned long>(args.a[0]);
+        if (persona == 0xfffffffful)
+            return ok(kPerLinux, "current persona is PER_LINUX");
+        if (persona != kPerLinux)
+            return fail(kEinval, "only PER_LINUX persona is supported");
+        return ok(kPerLinux, "previous persona was PER_LINUX");
+    }
+
+    case kArchPrctl: {
+        int code = static_cast<int>(args.a[0]);
+        uint64_t addr = args.a[1];
+        if (code == kArchSetFs) {
+            fs_base_ = addr;
+            return ok(0, "ARCH_SET_FS value recorded (no real TLS switch)");
+        }
+        if (code == kArchSetGs) {
+            gs_base_ = addr;
+            return ok(0, "ARCH_SET_GS value recorded (no real TLS switch)");
+        }
+        if (code == kArchGetFs || code == kArchGetGs) {
+            if (addr == 0)
+                return fail(kEfault, "arch_prctl result pointer is null");
+            *reinterpret_cast<uint64_t*>(addr) = code == kArchGetFs ? fs_base_ : gs_base_;
+            return ok(0, "arch_prctl base value returned");
+        }
+        return fail(kEinval, "unsupported arch_prctl code");
+    }
+
+    case kSchedSetaffinity: {
+        int pid = static_cast<int>(static_cast<int64_t>(args.a[0]));
+        size_t len = static_cast<size_t>(args.a[1]);
+        const void* mask = reinterpret_cast<const void*>(args.a[2]);
+        if (pid != 0 && static_cast<uint64_t>(pid) != context_id_)
+            return fail(kEsrch, "no such process in the single-process model");
+        if (len < sizeof(uint64_t))
+            return fail(kEinval, "affinity mask is smaller than one CPU word");
+        if (!mask)
+            return fail(kEfault, "affinity mask is null");
+        bool any = false;
+        const uint8_t* bytes = static_cast<const uint8_t*>(mask);
+        for (size_t i = 0; i < len; ++i)
+            any = any || bytes[i] != 0;
+        if (!any)
+            return fail(kEinval, "affinity mask selects no CPU");
+        return ok(0, "single-CPU affinity accepted");
+    }
+
+    case kSchedGetaffinity: {
+        int pid = static_cast<int>(static_cast<int64_t>(args.a[0]));
+        size_t len = static_cast<size_t>(args.a[1]);
+        void* mask = reinterpret_cast<void*>(args.a[2]);
+        if (pid != 0 && static_cast<uint64_t>(pid) != context_id_)
+            return fail(kEsrch, "no such process in the single-process model");
+        if (len < sizeof(uint64_t))
+            return fail(kEinval, "affinity mask is smaller than one CPU word");
+        if (!mask)
+            return fail(kEfault, "affinity mask is null");
+        std::memset(mask, 0, len);
+        *static_cast<uint64_t*>(mask) = 1; // CPU 0
+        return ok(0, "affinity mask reports CPU 0");
+    }
+
+    case kSetRobustList: {
+        robust_list_ = args.a[0];
+        robust_list_len_ = static_cast<size_t>(args.a[1]);
+        return ok(0, "robust futex list registered (processing not modeled)");
+    }
+
+    case kWait4: {
+        return fail(kEchild, "no child processes exist in the emulation model");
+    }
+
+    case kExit: {
+        stop_requested_ = true;
+        return ok(0, "thread exit requested");
+    }
+
     case kFsync: {
         if (!fd_table_)
             return fail(kEbadf, "no fd table");
@@ -536,6 +702,66 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
         return ok(rc, "fcntl ok");
     }
 
+    case kFlock: {
+        int fd = static_cast<int>(static_cast<int64_t>(args.a[0]));
+        int op = static_cast<int>(args.a[1]);
+        int err = 0;
+        if (fd_table_->flock(fd, op, &err) != 0)
+            return fail(err != 0 ? err : kEbadf, "flock failed");
+        return ok(0, "flock ok");
+    }
+
+    case kGetdents64: {
+        int fd = static_cast<int>(static_cast<int64_t>(args.a[0]));
+        void* buf = reinterpret_cast<void*>(args.a[1]);
+        size_t count = static_cast<size_t>(args.a[2]);
+        int err = 0;
+        int64_t n = fd_table_->getdents64(fd, buf, count, &err);
+        if (n < 0)
+            return fail(err != 0 ? err : kEbadf, "getdents64 failed");
+        return ok(n, "directory entries emitted");
+    }
+
+    case kIoctl: {
+        int fd = static_cast<int>(static_cast<int64_t>(args.a[0]));
+        unsigned long request = static_cast<unsigned long>(args.a[1]);
+        void* arg = reinterpret_cast<void*>(args.a[2]);
+        int err = 0;
+        if (fd_table_->ioctl(fd, request, arg, &err) != 0)
+            return fail(err != 0 ? err : kEnotty, "ioctl failed");
+        return ok(0, "ioctl ok");
+    }
+
+    case kPpoll: {
+        PollFd* fds = reinterpret_cast<PollFd*>(args.a[0]);
+        int nfds = static_cast<int>(static_cast<int64_t>(args.a[1]));
+        const TimespecView* timeout = reinterpret_cast<const TimespecView*>(args.a[2]);
+        int timeout_ms = -1;
+        if (timeout != nullptr) {
+            if (timeout->tv_sec < 0 || timeout->tv_nsec < 0 || timeout->tv_nsec > 999999999)
+                return fail(kEinval, "invalid ppoll timespec");
+            uint64_t ns = static_cast<uint64_t>(timeout->tv_sec) * 1000000000ull +
+                          static_cast<uint64_t>(timeout->tv_nsec);
+            timeout_ms = static_cast<int>((ns + 999999ull) / 1000000ull);
+        }
+        int err = 0;
+        int n = fd_table_->poll(fds, nfds, timeout_ms, &err);
+        if (n < 0)
+            return fail(err != 0 ? err : kEinval, "ppoll failed");
+        return ok(n, n > 0 ? "ready descriptors reported" : "ppoll timed out");
+    }
+
+    case kMemfdCreate: {
+        const char* name = reinterpret_cast<const char*>(args.a[0]);
+        int flags = static_cast<int>(args.a[1]);
+        if (!name)
+            return fail(kEfault, "memfd name is null");
+        int fd = fd_table_->create_memfd(name, flags);
+        if (fd < 0)
+            return fail(-fd, "memfd_create failed");
+        return ok(fd, "in-process memory file created");
+    }
+
     case kUnlinkat: {
         int dirfd = static_cast<int>(static_cast<int64_t>(args.a[0]));
         const char* path = reinterpret_cast<const char*>(args.a[1]);
@@ -547,11 +773,12 @@ DispatchResult SyscallDispatch::invoke(int linux_nr, const SyscallArgs& args) {
         if ((flags & ~kAtRemovedir) != 0)
             return fail(kEinval, "unsupported unlinkat flags");
 
+        std::string resolved = resolve_path(path);
         int rc;
         if ((flags & kAtRemovedir) != 0) {
-            rc = ::rmdir(path);
+            rc = ::rmdir(resolved.c_str());
         } else {
-            rc = ::unlink(path);
+            rc = ::unlink(resolved.c_str());
         }
         if (rc != 0) {
             int he = host_errno_to_linux();

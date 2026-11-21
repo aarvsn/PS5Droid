@@ -36,6 +36,7 @@ struct RawElf64Phdr {
     uint64_t p_align;
 };
 
+constexpr uint32_t PT_LOAD = 1;
 constexpr uint32_t PT_INTERP = 3;
 constexpr uint32_t PT_TLS = 7;
 
@@ -110,6 +111,16 @@ BionicElfInfo BionicLoader::parse_header(const void* data, size_t size) {
         }
     }
 
+    // Program headers live inside a PT_LOAD segment; translate e_phoff to
+    // the virtual address the dynamic linker sees at AT_PHDR.
+    for (const Elf64PhdrInfo& phdr : res.phdrs) {
+        if (phdr.type == PT_LOAD && ehdr->e_phoff >= phdr.offset &&
+            ehdr->e_phoff < phdr.offset + phdr.filesz) {
+            res.phdr_addr = phdr.vaddr + (ehdr->e_phoff - phdr.offset);
+            break;
+        }
+    }
+
     return res;
 }
 
@@ -127,29 +138,44 @@ std::vector<AuxvEntry> BionicLoader::build_auxv(uint64_t entry, uint64_t phdr, u
 
 std::vector<uint8_t> BionicLoader::setup_initial_stack(const BionicElfInfo& info,
                                                        const std::vector<std::string>& args,
-                                                       const std::vector<std::string>& env) {
-    std::vector<uint8_t> stack;
-    auto auxv = build_auxv(info.entry_point, 0x400000, info.phdrs.size());
+                                                       const std::vector<std::string>& env,
+                                                       uint64_t stack_base) {
+    const uint64_t phdr = info.phdr_addr != 0 ? info.phdr_addr : 0x400000;
+    auto auxv = build_auxv(info.entry_point, phdr, info.phdrs.size());
 
-    // Basic layout simulation: argc, argv pointers, env pointers, auxv pairs
-    uint64_t argc = args.size();
-    stack.resize(4096, 0);
+    // Linux x86_64 initial stack: argc, argv[], NULL, envp[], NULL, auxv[],
+    // then the argument/environment strings themselves. Pointers are
+    // expressed relative to `stack_base` so the caller can place the buffer.
+    size_t words = 1 + args.size() + 1 + env.size() + 1 + auxv.size() * 2;
+    size_t strings_offset = (words * sizeof(uint64_t) + 7) & ~static_cast<size_t>(7);
+    size_t total = strings_offset;
+    for (const std::string& arg : args)
+        total += arg.size() + 1;
+    for (const std::string& entry : env)
+        total += entry.size() + 1;
+
+    std::vector<uint8_t> stack(total, 0);
     uint64_t* ptr = reinterpret_cast<uint64_t*>(stack.data());
 
-    *ptr++ = argc;
-    for (size_t i = 0; i < args.size(); ++i) {
-        *ptr++ = 0x7fffffffe000 + i * 32;
+    *ptr++ = static_cast<uint64_t>(args.size());
+    size_t cursor = strings_offset;
+    for (const std::string& arg : args) {
+        *ptr++ = stack_base + cursor;
+        std::memcpy(stack.data() + cursor, arg.c_str(), arg.size() + 1);
+        cursor += arg.size() + 1;
     }
     *ptr++ = 0; // NULL argv terminator
 
-    for (size_t i = 0; i < env.size(); ++i) {
-        *ptr++ = 0x7fffffffe800 + i * 32;
+    for (const std::string& entry : env) {
+        *ptr++ = stack_base + cursor;
+        std::memcpy(stack.data() + cursor, entry.c_str(), entry.size() + 1);
+        cursor += entry.size() + 1;
     }
     *ptr++ = 0; // NULL env terminator
 
-    for (const auto& a : auxv) {
-        *ptr++ = a.type;
-        *ptr++ = a.val;
+    for (const AuxvEntry& entry : auxv) {
+        *ptr++ = entry.type;
+        *ptr++ = entry.val;
     }
 
     return stack;

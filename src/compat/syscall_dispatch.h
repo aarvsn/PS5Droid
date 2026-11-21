@@ -60,11 +60,18 @@ class SyscallDispatch {
     DispatchResult fail(int err, const char* note);
     DispatchResult nosys(const char* note);
 
+    std::string resolve_path(const char* path) const;
+
     CompatMemory* memory_;
     CompatFdTable* fd_table_;
     CompatFdTable default_fd_table_;
     uint64_t context_id_;
     bool stop_requested_ = false;
+    std::string guest_cwd_;
+    uint64_t fs_base_ = 0;
+    uint64_t gs_base_ = 0;
+    uint64_t robust_list_ = 0;
+    size_t robust_list_len_ = 0;
 };
 
 } // namespace compat

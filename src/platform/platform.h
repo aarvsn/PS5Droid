@@ -155,6 +155,7 @@ class Futex {
 bool read_file(const std::string& path, std::string* out);
 bool write_file(const std::string& path, const void* data, size_t len);
 bool file_exists(const std::string& path);
+bool is_directory(const std::string& path);
 bool remove_file(const std::string& path);
 bool make_dir(const std::string& path, int mode);
 std::vector<std::string> list_dir(const std::string& path);

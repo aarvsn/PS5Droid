@@ -27,6 +27,7 @@ struct Elf64PhdrInfo {
 struct BionicElfInfo {
     bool valid = false;
     uint64_t entry_point = 0;
+    uint64_t phdr_addr = 0; // in-memory address of the program headers (from PT_LOAD)
     std::string interp;
     bool is_bionic = false;
     uint64_t tls_filesz = 0;
@@ -48,7 +49,8 @@ class BionicLoader {
                                              uint64_t pagesz = 4096);
     static std::vector<uint8_t> setup_initial_stack(const BionicElfInfo& info,
                                                     const std::vector<std::string>& args,
-                                                    const std::vector<std::string>& env);
+                                                    const std::vector<std::string>& env,
+                                                    uint64_t stack_base = 0x7fffffffe000ull);
 };
 
 } // namespace compat
