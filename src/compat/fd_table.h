@@ -33,6 +33,8 @@ enum class FdType {
     kEpoll,
     kEventFd,
     kPipe,
+    kDirectory,
+    kMemFd,
 };
 
 struct StatBuf {
@@ -56,6 +58,13 @@ struct EpollEvent {
     uint64_t data;
 };
 
+// Linux x86_64 struct pollfd (short fields + int fd).
+struct PollFd {
+    int fd;
+    int16_t events;
+    int16_t revents;
+};
+
 class CompatFdTable;
 
 class FdEntry {
@@ -75,6 +84,25 @@ class FdEntry {
         return 0;
     }
     virtual void close() = 0;
+
+    // getdents64 for directory entries; non-directories report EISDIR.
+    virtual int64_t getdents64(void* buf, size_t count, int* err) {
+        (void)buf;
+        (void)count;
+        set_err(err, linux_abi::kEnotdir);
+        return -1;
+    }
+
+    // ioctl subset (FIONREAD); default reports ENOTTY.
+    virtual int ioctl(unsigned long request, void* arg, int* err) {
+        (void)request;
+        (void)arg;
+        set_err(err, linux_abi::kEnotty);
+        return -1;
+    }
+
+    // Identity used by flock: files share a path; other entries are unique.
+    virtual const std::string* lock_path() const { return nullptr; }
 
     // Event mask currently reported to epoll (linux_abi::LinuxEpollEventBit).
     // Default: always ready for read and write (regular files/streams).
@@ -103,12 +131,16 @@ class CompatFdTable {
     ~CompatFdTable();
 
     // Opens a file with LINUX x86_64 O_* flag values (linux_abi::LinuxOpenFlag).
+    // Directories are opened as guest directory streams (getdents64).
     // Returns the new fd, or a negative Linux errno (-ENOENT, -EEXIST, ...).
     int open_file(const std::string& path, int flags, int mode);
 
     int create_epoll();
     // Returns the new fd, or -EINVAL for initval above the kernel ceiling.
     int create_eventfd(uint64_t initval, int flags);
+
+    // Creates an in-process memory file (memfd_create).
+    int create_memfd(const std::string& name, int flags);
 
     // Creates an in-process guest pipe.
     int create_pipe(int pipefds[2], int flags);
@@ -117,11 +149,20 @@ class CompatFdTable {
     int epoll_ctl(int epfd, int op, int fd, const EpollEvent* event);
     int epoll_wait(int epfd, EpollEvent* events, int maxevents, int timeout_ms);
 
+    // poll(2) over guest fds. Returns the number of ready descriptors, 0 on
+    // timeout, or -1 with *err set.
+    int poll(PollFd* fds, int nfds, int timeout_ms, int* err = nullptr);
+
+    // flock(2) advisory locking (SH/EX/UN, LOCK_NB).
+    int flock(int fd, int op, int* err = nullptr);
+
     // All return -1 with *err set to the Linux errno on failure.
     int64_t read(int fd, void* buf, size_t count, int* err = nullptr);
     int64_t pread64(int fd, void* buf, size_t count, int64_t offset, int* err = nullptr);
     int64_t write(int fd, const void* buf, size_t count, int* err = nullptr);
     int64_t lseek(int fd, int64_t offset, int whence, int* err = nullptr);
+    int64_t getdents64(int fd, void* buf, size_t count, int* err = nullptr);
+    int ioctl(int fd, unsigned long request, void* arg, int* err = nullptr);
     bool fstat(int fd, StatBuf* statbuf);
 
     int dup(int oldfd);
@@ -134,11 +175,19 @@ class CompatFdTable {
     std::shared_ptr<FdEntry> get(int fd);
 
   private:
+    struct FlockState {
+        FdEntry* exclusive = nullptr;
+        std::unordered_map<FdEntry*, int> shared;
+    };
+
     int allocate_fd_locked(int minfd = 0);
     int dup_minfd_locked(int oldfd, int minfd, bool cloexec);
+    void release_locks_locked(FdEntry* entry);
+    bool try_flock_locked(const std::string& key, FdEntry* owner, int op);
 
     std::mutex mutex_;
     std::unordered_map<int, TableSlot> table_;
+    std::unordered_map<std::string, FlockState> flocks_;
 };
 
 } // namespace compat

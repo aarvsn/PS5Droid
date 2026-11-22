@@ -16,7 +16,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(ps5droid
-    VERSION 1.0.5
+    VERSION 1.0.6
     DESCRIPTION "PS5Droid - native Android runtime research for PS5"
     LANGUAGES C CXX)
 
@@ -103,6 +103,7 @@ if(PS5DROID_BUILD_TESTS AND PS5DROID_BUILD_HOST AND NOT PROSPERO)
         tests/test_compat_dispatch.cpp
         tests/test_compat_matrix.cpp
         tests/test_compat_fs_syscalls.cpp
+        tests/test_compat_debt.cpp
         tests/test_ipc_ring.cpp
         tests/test_image_manager.cpp
         tests/test_runtime_manager.cpp

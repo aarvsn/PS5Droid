@@ -33,15 +33,16 @@ src/
 │       └── input_ps5.cpp     scePad backend
 ├── compat/                   Linux ABI experiment (Milestone 3+)
 │   ├── linux_abi.h/.cpp      syscall constants + tables + verified FreeBSD mapping
-│   ├── memory_compat.cpp     Linux brk + anonymous MAP_PRIVATE mmap semantics
+│   ├── memory_compat.cpp     Linux brk + anonymous MAP_PRIVATE mmap/mremap/madvise semantics
 │   ├── fd_table.h/.cpp       guest fd table: Linux O_* flags, lowest-free fds, guest pipes,
-│   │                         readiness-based epoll, eventfd (EFD_SEMAPHORE/overflow)
+│   │                         directory streams, memfd, flock, poll, readiness-based
+│   │                         epoll, eventfd (EFD_SEMAPHORE/overflow)
 │   ├── syscall_dispatch.cpp  Linux syscall number -> emulated op dispatch
-│   ├── bionic_loader.cpp     x86_64 ELF inspection + auxv/initial-stack builder
+│   ├── bionic_loader.cpp     x86_64 ELF inspection + real argv/envp/auxv stack builder
 │   └── ipc_compat.cpp        SPSC ring + Binder-style block allocator
 ├── android/
 │   ├── sha256.cpp            FIPS 180-4 (clean-room)
-│   ├── image_manager.cpp     manifest parsing + ext4 superblock + AXML parser + ZIP + build.prop
+│   ├── image_manager.cpp     manifest + ext4 probe + AXML + ZIP/DEFLATE (dynamic Huffman) + build.prop
 │   ├── runtime_manager.cpp   capability probes + honest start attempts
 │   └── binder/
 │       ├── binder_engine.h/.cpp  in-process Binder RPC engine (Milestone 5)
@@ -101,24 +102,33 @@ numbers and executes a curated subset:
 * `futex` WAIT/WAKE (private) over `platform::Futex` (registry-based,
   wake-atomicity mirrors Linux's kernel-side check-and-enqueue);
 * a **guest fd table** (`compat::CompatFdTable`) with Linux `O_*` flag
-  values, descriptor and status flag management via `fcntl`, `fsync` buffer synchronization, lowest-free fd allocation, `dup`/`dup2`/`dup3`, in-process guest pipes (`pipe2`),
+  values, descriptor and status flag management via `fcntl`, `fsync` buffer
+  synchronization, lowest-free fd allocation, `dup`/`dup2`/`dup3`,
+  in-process guest pipes (`pipe2`), directory streams (`getdents64`),
+  `memfd_create`, advisory `flock`, `poll`/`ppoll`, `FIONREAD` ioctl,
   positioned `pread64` that never moves the shared offset, eventfd counters
   honoring `EFD_SEMAPHORE` and the overflow ceiling, and `writev` gather output;
 * **readiness-based epoll**: `epoll_ctl` enforces Linux `EEXIST`/
   `ENOENT` semantics and `epoll_wait` reports only entries whose target
   fd is currently ready (eventfd counters and pipes drive readiness);
 * the path family `stat`/`newfstatat`/`unlinkat` (AT_FDCWD only), `access`,
-  `mkdir`, `unlink`, `readlink`, `getcwd` over host stat/stdio/symlink calls;
+  `mkdir`, `unlink`, `readlink`, `getcwd`, and `chdir` over host
+  stat/stdio/symlink calls, with a tracked guest cwd for relative paths;
 * `uname` and `prctl` (process/thread naming);
-* user and group identity (`getuid`, `getgid`, `geteuid`, `getegid`, `getppid` returning single-process guest identity) and thread id tracking (`set_tid_address`);
+* user and group identity (`getuid`, `getgid`, `geteuid`, `getegid`, `getppid` returning single-process guest identity), thread id tracking (`set_tid_address`), `personality`, and `set_robust_list` registration;
+* `arch_prctl` FS/GS bookkeeping (PARTIAL: no real TLS base switch) and
+  single-CPU `sched_setaffinity`/`sched_getaffinity`;
+* `mremap` (PARTIAL: in-place shrink and MAYMOVE grow) and `madvise`
+  (`MADV_DONTNEED` zeroes anonymous private pages);
+* `exit`/`wait4` under the no-child model (`wait4` returns `ECHILD`);
 * high-resolution sleep (`nanosleep`, `clock_nanosleep`);
 * `getrandom` (PARTIAL) from the host `/dev/urandom`;
 * `write` to the process streams (fd 1/2);
 * `exit_group` flags the context.
 
 Everything else returns `-ENOSYS` with a *stable, explanatory note*
-sourced from the syscall table. The matrix (46 emulated / 4 partial /
-30 unsupported = 80 tracked at the v1.0.5 release) is data, not prose:
+sourced from the syscall table. The matrix (57 emulated / 8 partial /
+15 unsupported = 80 tracked at the v1.0.6 release) is data, not prose:
 `ps5droid-host --matrix` prints it, tests pin the counts, and the
 release documents repeat them.
 
@@ -175,17 +185,23 @@ documented in `development.md`; CI cross-builds the ELF on every push.
 1. **M1 done** — host foundation, tests, CI, PS5 build path (ELF-only).
 2. **M2 next** — run the same probes on a real console via elfldr and
    fill the [ASSUMPTION] items in `platform-constraints.md`.
-3. **M3 mostly done (v1.0.5)** — anonymous-memory subset, guest fd
-   table with Linux flag semantics, `fcntl`, `fsync`, guest pipes (`pipe2`), readiness-based
-   epoll/eventfd, `uname`, `prctl`, user/group/parent IDs (`getppid`), thread tracking (`set_tid_address`), `clock_nanosleep`, and path-stat family demonstrated end-to-end;
-   remaining: sockets, signals, directory streams, kqueue-backed poll on Orbis.
-4. **M4 done at feasibility level** — bionic ELF inspection + auxv/
-   initial-stack construction tested on host; full dynamic linker
-   namespaces remain un-hosted.
+3. **M3 mostly done (v1.0.6)** — anonymous-memory subset with
+   `mremap`/`madvise`, guest fd table with Linux flag semantics, `fcntl`,
+   `fsync`, `flock`, guest pipes (`pipe2`), directory streams
+   (`getdents64`), `memfd_create`, `poll`/`ppoll`, readiness-based
+   epoll/eventfd, `uname`, `prctl`, identity and affinity calls, thread
+   tracking (`set_tid_address`/`set_robust_list`), `clock_nanosleep`, and
+   the path-stat family plus `chdir` demonstrated end-to-end; remaining:
+   sockets, signals, and a kqueue-backed poll implementation on Orbis.
+4. **M4 done at feasibility level** — bionic ELF inspection + real
+   argv/envp/auxv initial-stack construction (AT_PHDR derived from
+   PT_LOAD) tested on host; full dynamic linker namespaces remain
+   un-hosted.
 5. **M5 done at engine level** — in-process Binder RPC engine
    (handles, transactions, block-allocated buffers) tested on host; not
    wire-compatible with the kernel protocol and never claiming to be.
-6. **M6 done at inspection level (v1.0.5)** — APK structure probing (ZIP
-   extraction, binary AXML AndroidManifest parsing for package name, app label, permissions, SDK
-   levels, native library ABI extraction, DEX/native-lib presence); launch research waits on M4/M5 runtime
-   evidence.
+6. **M6 done at inspection level (v1.0.6)** — APK structure probing (ZIP
+   extraction, STORED/fixed/dynamic-Huffman DEFLATE, binary AXML
+   AndroidManifest parsing for package name, app label, permissions, SDK
+   levels, native library ABI extraction, DEX/native-lib presence); launch
+   research waits on M4/M5 runtime evidence.

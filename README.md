@@ -16,20 +16,20 @@ Waydroid is used as an *architectural reference* only (see
 code is imported. Low-level console facts come from the open-source
 [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk) ecosystem.
 
-## Current status (v1.0.5)
+## Current status (v1.0.6)
 
 | Area | Status |
 |---|---|
 | Portable platform layer (memory, threads, fs, IPC) | **Implemented and tested (host)** |
-| Linux ABI dispatch experiment (guest fd table with Linux `O_*` flags, `fcntl`, `fsync`, readiness-based epoll/eventfd, guest pipes, mmap/brk/futex, path-stat family, writev, uname, prctl, getuid/getgid, getppid, set_tid_address, clock_nanosleep, getrandom) | **Implemented and tested (host)** |
-| Compatibility matrix (80 syscalls: 46 emulated / 4 partial / 30 unsupported) | **Implemented and tested (host)** |
+| Linux ABI dispatch experiment (guest fd table with Linux `O_*` flags, `fcntl`, `fsync`, readiness-based epoll/eventfd, guest pipes, mmap/brk/mremap/madvise, futex, path-stat family, guest cwd, directory streams, `flock`, `memfd_create`, `ppoll`, `FIONREAD`, writev, uname, prctl, getuid/getgid, getppid, set_tid_address, clock_nanosleep, getrandom) | **Implemented and tested (host)** |
+| Compatibility matrix (80 syscalls: 57 emulated / 8 partial / 15 unsupported) | **Implemented and tested (host)** |
 | Capability probes + runtime manager with structured blockers | **Implemented and tested (host)** |
 | Android image manifest + SHA-256 + read-only ext4 superblock probe + build.prop parser | **Implemented and tested (host)** |
-| APK inspection (binary AXML manifest parsing, ZIP entry extraction, native ABI detection, package name, app label, permissions & SDK levels) | **Implemented and tested (host)** |
+| APK inspection (binary AXML manifest parsing, STORED/fixed/dynamic-Huffman DEFLATE, ZIP entry extraction, native ABI detection, package name, app label, permissions & SDK levels) | **Implemented and tested (host)** |
 | Launcher UI model + 8x8 framebuffer font + shared screen builders | **Implemented and tested (host)** |
 | Native PS5 payload (`ps5droid.elf`, video-out + pad + probe/status/matrix/about screens) | **Implemented, NOT tested on console** |
 | PS5 PKG packaging | **Not implemented** (ELF-payload path only) |
-| Linux binary loading / bionic re-hosting (Milestone 4) | **Implemented and tested (host)** |
+| Linux binary loading / bionic re-hosting (Milestone 4, real argv/envp/auxv stack layout) | **Implemented and tested (host)** |
 | Binder re-hosting (Milestone 5) | **Implemented and tested (host)** |
 | Audio output | **Not implemented** (explicitly reported unsupported) |
 | Vulkan / GPU-accelerated Android graphics | **Blocked** (no Vulkan driver for homebrew; proprietary AGC/GNM only) |
@@ -53,10 +53,13 @@ app/main.cpp (host CLI)          app/ps5_main.cpp (PS5 payload)
   the PS5 backend uses ps5-payload-sdk facilities with hand-maintained,
   provenance-documented firmware declarations.
 * **compat/** — accepts Linux x86_64 syscall numbers and executes an
-  honestly classified subset (anonymous memory, clocks, futex wait/wake,
-  a guest fd table with Linux `O_*` flag values, `fcntl`, `fsync`, guest pipes, readiness-based
-  epoll/eventfd, path stat family, writev, uname, prctl, getuid/getgid, getppid, set_tid_address, clock_nanosleep, getrandom); everything else
-  returns `-ENOSYS` with an explanation. The verified
+  honestly classified subset (anonymous memory with `mremap`/`madvise`,
+  clocks, futex wait/wake, a guest fd table with Linux `O_*` flag values,
+  `fcntl`, `fsync`, `flock`, guest pipes, directory streams, `memfd_create`,
+  `ppoll`, readiness-based epoll/eventfd, path stat family with a tracked
+  guest cwd, writev, uname, prctl, identity syscalls, `arch_prctl` bookkeeping,
+  affinity, set_tid_address/set_robust_list, clock_nanosleep, getrandom);
+  everything else returns `-ENOSYS` with an explanation. The verified
   Linux→FreeBSD number mapping (e.g. mmap 9→477) is data in
   `src/compat/linux_abi.h`.
 * **android/** — image handling (manifest, SHA-256, ext4 superblock

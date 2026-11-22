@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 #include "platform/platform.h"
 
@@ -117,6 +118,30 @@ class FileFdEntry : public FdEntry {
         return 0;
     }
 
+    int ioctl(unsigned long request, void* arg, int* err) override {
+        if (request != linux_abi::kFionread)
+            return FdEntry::ioctl(request, arg, err);
+        if (!arg) {
+            set_err(err, linux_abi::kEfault);
+            return -1;
+        }
+        if (!fp_) {
+            set_err(err, linux_abi::kEbadf);
+            return -1;
+        }
+        long cur = ftell(fp_);
+        if (cur < 0 || fseek(fp_, 0, SEEK_END) != 0) {
+            set_err(err, linux_abi::kEio);
+            return -1;
+        }
+        long end = ftell(fp_);
+        fseek(fp_, cur, SEEK_SET);
+        *static_cast<int*>(arg) = end > cur ? static_cast<int>(end - cur) : 0;
+        return 0;
+    }
+
+    const std::string* lock_path() const override { return &path_; }
+
     void close() override {
         if (fp_) {
             fclose(fp_);
@@ -176,6 +201,18 @@ class StreamFdEntry : public FdEntry {
         }
         return 0;
     }
+
+    int ioctl(unsigned long request, void* arg, int* err) override {
+        if (request != linux_abi::kFionread)
+            return FdEntry::ioctl(request, arg, err);
+        if (!arg) {
+            set_err(err, linux_abi::kEfault);
+            return -1;
+        }
+        *static_cast<int*>(arg) = 0;
+        return 0;
+    }
+
     void close() override { stream_ = nullptr; }
 
     uint32_t readiness() const override { return linux_abi::kEpollOut; }
@@ -425,6 +462,18 @@ class PipeFdEntry : public FdEntry {
         return true;
     }
 
+    int ioctl(unsigned long request, void* arg, int* err) override {
+        if (request != linux_abi::kFionread)
+            return FdEntry::ioctl(request, arg, err);
+        if (!arg) {
+            set_err(err, linux_abi::kEfault);
+            return -1;
+        }
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        *static_cast<int*>(arg) = static_cast<int>(state_->buffer.size());
+        return 0;
+    }
+
     void close() override {
         std::lock_guard<std::mutex> lock(state_->mutex);
         if (is_writer_) {
@@ -451,6 +500,197 @@ class PipeFdEntry : public FdEntry {
   private:
     std::shared_ptr<PipeState> state_;
     bool is_writer_;
+};
+
+// ---------------------------------------------------------------------------
+// Directory stream (getdents64). Names come from the portable platform
+// directory listing; inode numbers are synthetic and d_type is DT_UNKNOWN
+// because the platform layer does not expose either.
+// ---------------------------------------------------------------------------
+class DirFdEntry : public FdEntry {
+  public:
+    explicit DirFdEntry(const std::string& path) : path_(path) {
+        names_.push_back(".");
+        names_.push_back("..");
+        for (const std::string& name : platform::list_dir(path))
+            names_.push_back(name);
+    }
+
+    FdType type() const override { return FdType::kDirectory; }
+
+    int64_t read(void*, size_t, int64_t, int* err) override {
+        set_err(err, linux_abi::kEisdir);
+        return -1;
+    }
+    int64_t write(const void*, size_t, int64_t, int* err) override {
+        set_err(err, linux_abi::kEisdir);
+        return -1;
+    }
+    int64_t lseek(int64_t offset, int whence, int* err) override {
+        if (offset == 0 && whence == 0) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            index_ = 0;
+            return 0;
+        }
+        set_err(err, linux_abi::kEinval);
+        return -1;
+    }
+    bool fstat(StatBuf* statbuf) override {
+        if (!statbuf)
+            return false;
+        memset(statbuf, 0, sizeof(*statbuf));
+        statbuf->st_mode = 0040755; // S_IFDIR | 0755
+        return true;
+    }
+    void close() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        names_.clear();
+        index_ = 0;
+    }
+
+    int64_t getdents64(void* buf, size_t count, int* err) override {
+        if (!buf) {
+            set_err(err, linux_abi::kEfault);
+            return -1;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        size_t written = 0;
+        while (index_ < names_.size()) {
+            const std::string& name = names_[index_];
+            size_t reclen = (19 + name.size() + 1 + 7) & ~static_cast<size_t>(7);
+            if (reclen > count - written) {
+                if (written == 0) {
+                    set_err(err, linux_abi::kEinval);
+                    return -1;
+                }
+                break;
+            }
+            uint8_t* rec = static_cast<uint8_t*>(buf) + written;
+            memset(rec, 0, reclen);
+            uint64_t ino = static_cast<uint64_t>(index_ + 1);
+            int64_t off = static_cast<int64_t>(index_ + 1);
+            memcpy(rec + 0, &ino, sizeof(ino));
+            memcpy(rec + 8, &off, sizeof(off));
+            uint16_t rl = static_cast<uint16_t>(reclen);
+            memcpy(rec + 16, &rl, sizeof(rl));
+            rec[18] = 0; // DT_UNKNOWN
+            memcpy(rec + 19, name.c_str(), name.size() + 1);
+            written += reclen;
+            ++index_;
+        }
+        return static_cast<int64_t>(written);
+    }
+
+    const std::string* lock_path() const override { return &path_; }
+
+    uint32_t readiness() const override { return linux_abi::kEpollIn; }
+
+  private:
+    std::string path_;
+    std::vector<std::string> names_;
+    size_t index_ = 0;
+    mutable std::mutex mutex_;
+};
+
+// ---------------------------------------------------------------------------
+// In-process memory file (memfd_create).
+// ---------------------------------------------------------------------------
+class MemFdEntry : public FdEntry {
+  public:
+    explicit MemFdEntry(std::string name) : name_(std::move(name)) {}
+
+    FdType type() const override { return FdType::kMemFd; }
+
+    int64_t read(void* buf, size_t count, int64_t offset, int* err) override {
+        if (!buf && count > 0) {
+            set_err(err, linux_abi::kEfault);
+            return -1;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        size_t pos = offset >= 0 ? static_cast<size_t>(offset) : offset_;
+        if (pos >= data_.size())
+            return 0;
+        size_t n = std::min(count, data_.size() - pos);
+        memcpy(buf, data_.data() + pos, n);
+        if (offset < 0)
+            offset_ = pos + n;
+        return static_cast<int64_t>(n);
+    }
+
+    int64_t write(const void* buf, size_t count, int64_t offset, int* err) override {
+        if (!buf && count > 0) {
+            set_err(err, linux_abi::kEfault);
+            return -1;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        size_t pos = offset >= 0 ? static_cast<size_t>(offset) : offset_;
+        if (pos + count > data_.size())
+            data_.resize(pos + count, 0);
+        memcpy(data_.data() + pos, buf, count);
+        if (offset < 0)
+            offset_ = pos + count;
+        return static_cast<int64_t>(count);
+    }
+
+    int64_t lseek(int64_t offset, int whence, int* err) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        int64_t base;
+        if (whence == 0) {
+            base = 0;
+        } else if (whence == 1) {
+            base = static_cast<int64_t>(offset_);
+        } else if (whence == 2) {
+            base = static_cast<int64_t>(data_.size());
+        } else {
+            set_err(err, linux_abi::kEinval);
+            return -1;
+        }
+        int64_t next = base + offset;
+        if (next < 0) {
+            set_err(err, linux_abi::kEinval);
+            return -1;
+        }
+        offset_ = static_cast<size_t>(next);
+        return next;
+    }
+
+    bool fstat(StatBuf* statbuf) override {
+        if (!statbuf)
+            return false;
+        std::lock_guard<std::mutex> lock(mutex_);
+        memset(statbuf, 0, sizeof(*statbuf));
+        statbuf->st_mode = 0100666; // S_IFREG | 0666
+        statbuf->st_size = static_cast<int64_t>(data_.size());
+        statbuf->st_nlink = 1;
+        return true;
+    }
+
+    void close() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        data_.clear();
+        offset_ = 0;
+    }
+
+    int ioctl(unsigned long request, void* arg, int* err) override {
+        if (request != linux_abi::kFionread)
+            return FdEntry::ioctl(request, arg, err);
+        if (!arg) {
+            set_err(err, linux_abi::kEfault);
+            return -1;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        size_t remaining = offset_ < data_.size() ? data_.size() - offset_ : 0;
+        *static_cast<int*>(arg) = static_cast<int>(remaining);
+        return 0;
+    }
+
+    uint32_t readiness() const override { return linux_abi::kEpollIn | linux_abi::kEpollOut; }
+
+  private:
+    std::string name_;
+    std::vector<uint8_t> data_;
+    size_t offset_ = 0;
+    mutable std::mutex mutex_;
 };
 
 } // namespace
@@ -509,15 +749,40 @@ int CompatFdTable::open_file(const std::string& path, int flags, int mode) {
     const bool excl = (flags & kOExcl) != 0;
     const bool trunc = (flags & kOTrunc) != 0;
     const bool append = (flags & kOAppend) != 0;
+    const bool directory = (flags & kODirectory) != 0;
     const int access = flags & kOAccmode;
     if (access != kORdonly && access != kOWronly && access != kORdwr)
         return -kEinval;
 
     const bool exists = platform::file_exists(path);
+    const bool is_dir = exists && platform::is_directory(path);
+
+    if (directory) {
+        if (!exists)
+            return -kEnoent;
+        if (!is_dir)
+            return -kEnotdir;
+        if (access != kORdonly)
+            return -kEisdir;
+    } else if (is_dir && access != kORdonly) {
+        return -kEisdir;
+    }
+    if (is_dir && (cread || trunc))
+        return -kEisdir;
+
     if (excl && cread && exists)
         return -kEexist;
     if (!cread && !exists)
         return -kEnoent;
+
+    if (is_dir) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        int fd = allocate_fd_locked();
+        auto entry = std::make_shared<DirFdEntry>(path);
+        entry->set_status_flags(flags);
+        table_[fd] = TableSlot{entry, 0};
+        return fd;
+    }
 
     if (cread && !exists) {
         FILE* creator = fopen(path.c_str(), "ab");
@@ -563,6 +828,19 @@ int CompatFdTable::create_eventfd(uint64_t initval, int flags) {
     auto entry = std::make_shared<EventFdEntry>(initval);
     entry->set_semaphore((flags & kEfdSemaphore) != 0);
     int fd_flags = (flags & kEfdCloexec) ? kFdCloexec : 0;
+    table_[fd] = TableSlot{entry, fd_flags};
+    return fd;
+}
+
+int CompatFdTable::create_memfd(const std::string& name, int flags) {
+    using namespace linux_abi;
+    if ((flags & ~(kMemfdCloexec | kMemfdAllowSealing)) != 0)
+        return -kEinval;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    int fd = allocate_fd_locked();
+    auto entry = std::make_shared<MemFdEntry>(name);
+    int fd_flags = (flags & kMemfdCloexec) ? kFdCloexec : 0;
     table_[fd] = TableSlot{entry, fd_flags};
     return fd;
 }
@@ -646,6 +924,150 @@ bool CompatFdTable::fstat(int fd, StatBuf* statbuf) {
     return entry->fstat(statbuf);
 }
 
+int64_t CompatFdTable::getdents64(int fd, void* buf, size_t count, int* err) {
+    auto entry = get(fd);
+    if (!entry) {
+        set_table_err(err, linux_abi::kEbadf);
+        return -1;
+    }
+    return entry->getdents64(buf, count, err);
+}
+
+int CompatFdTable::ioctl(int fd, unsigned long request, void* arg, int* err) {
+    auto entry = get(fd);
+    if (!entry) {
+        set_table_err(err, linux_abi::kEbadf);
+        return -1;
+    }
+    return entry->ioctl(request, arg, err);
+}
+
+int CompatFdTable::poll(PollFd* fds, int nfds, int timeout_ms, int* err) {
+    using namespace linux_abi;
+    if (nfds < 0 || (nfds > 0 && fds == nullptr)) {
+        set_table_err(err, nfds < 0 ? kEinval : kEfault);
+        return -1;
+    }
+
+    int64_t deadline_ns = -1;
+    if (timeout_ms > 0)
+        deadline_ns = static_cast<int64_t>(platform::monotonic_ns()) +
+                      static_cast<int64_t>(timeout_ms) * 1000000;
+
+    while (true) {
+        int ready = 0;
+        for (int i = 0; i < nfds; ++i) {
+            fds[i].revents = 0;
+            auto entry = get(fds[i].fd);
+            if (!entry) {
+                fds[i].revents = static_cast<int16_t>(kPollNval);
+                ++ready;
+                continue;
+            }
+            uint32_t mask = entry->readiness();
+            int16_t re = 0;
+            if ((mask & kEpollIn) != 0 && (fds[i].events & kPollIn) != 0)
+                re = static_cast<int16_t>(re | kPollIn);
+            if ((mask & kEpollOut) != 0 && (fds[i].events & kPollOut) != 0)
+                re = static_cast<int16_t>(re | kPollOut);
+            fds[i].revents = re;
+            if (re != 0)
+                ++ready;
+        }
+        if (ready > 0)
+            return ready;
+        if (timeout_ms == 0)
+            return 0;
+        if (deadline_ns >= 0 && static_cast<int64_t>(platform::monotonic_ns()) >= deadline_ns)
+            return 0;
+        platform::sleep_ns(1000000);
+    }
+}
+
+bool CompatFdTable::try_flock_locked(const std::string& key, FdEntry* owner, int op) {
+    using namespace linux_abi;
+    const int base = op & ~kFlockNb;
+    auto it = flocks_.find(key);
+
+    if (base == kFlockUn) {
+        if (it == flocks_.end())
+            return true;
+        it->second.shared.erase(owner);
+        if (it->second.exclusive == owner)
+            it->second.exclusive = nullptr;
+        if (it->second.exclusive == nullptr && it->second.shared.empty())
+            flocks_.erase(it);
+        return true;
+    }
+    if (base != kFlockSh && base != kFlockEx)
+        return false;
+
+    if (it == flocks_.end())
+        it = flocks_.emplace(key, FlockState{}).first;
+    FlockState& state = it->second;
+
+    if (base == kFlockSh) {
+        if (state.exclusive != nullptr && state.exclusive != owner)
+            return false;
+        state.shared[owner] = 1;
+        return true;
+    }
+
+    if (state.exclusive != nullptr && state.exclusive != owner)
+        return false;
+    for (const auto& entry : state.shared) {
+        if (entry.first != owner)
+            return false;
+    }
+    state.shared.erase(owner);
+    state.exclusive = owner;
+    return true;
+}
+
+void CompatFdTable::release_locks_locked(FdEntry* entry) {
+    for (auto it = flocks_.begin(); it != flocks_.end();) {
+        it->second.shared.erase(entry);
+        if (it->second.exclusive == entry)
+            it->second.exclusive = nullptr;
+        if (it->second.exclusive == nullptr && it->second.shared.empty()) {
+            it = flocks_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+int CompatFdTable::flock(int fd, int op, int* err) {
+    using namespace linux_abi;
+    auto entry = get(fd);
+    if (!entry) {
+        set_table_err(err, kEbadf);
+        return -1;
+    }
+    const std::string* path = entry->lock_path();
+    std::string key =
+        path ? *path : "entry:" + std::to_string(reinterpret_cast<uintptr_t>(entry.get()));
+    const bool nonblock = (op & kFlockNb) != 0;
+    const int base = op & ~kFlockNb;
+    if (base != kFlockSh && base != kFlockEx && base != kFlockUn) {
+        set_table_err(err, kEinval);
+        return -1;
+    }
+
+    while (true) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (try_flock_locked(key, entry.get(), op))
+                return 0;
+        }
+        if (nonblock) {
+            set_table_err(err, kEagain);
+            return -1;
+        }
+        platform::sleep_ns(1000000);
+    }
+}
+
 int CompatFdTable::dup(int oldfd) {
     return dup_minfd(oldfd, 0, false);
 }
@@ -657,7 +1079,14 @@ int CompatFdTable::dup2(int oldfd, int newfd) {
         return -1;
     if (oldfd == newfd)
         return newfd;
-    table_[newfd] = TableSlot{it->second.entry, 0};
+    auto existing = table_.find(newfd);
+    if (existing != table_.end()) {
+        if (existing->second.entry.use_count() == 1)
+            release_locks_locked(existing->second.entry.get());
+        existing->second.entry->close();
+    }
+    auto entry = it->second.entry;
+    table_[newfd] = TableSlot{entry, 0};
     return newfd;
 }
 
@@ -721,6 +1150,10 @@ int CompatFdTable::close(int fd) {
     auto it = table_.find(fd);
     if (it == table_.end())
         return -1;
+    // flock locks belong to the open file description: dup'ed fds share it,
+    // so release only when the last descriptor referencing the entry closes.
+    if (it->second.entry.use_count() == 1)
+        release_locks_locked(it->second.entry.get());
     it->second.entry->close();
     table_.erase(it);
     return 0;

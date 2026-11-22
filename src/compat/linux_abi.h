@@ -36,9 +36,11 @@ namespace linux_abi {
 enum LinuxErrno : int {
     kEperm = 1,
     kEnoent = 2,
+    kEsrch = 3,
     kEintr = 4,
     kEio = 5,
     kEbadf = 9,
+    kEchild = 10,
     kEagain = 11,
     kEnomem = 12,
     kEaccess = 13,
@@ -46,13 +48,17 @@ enum LinuxErrno : int {
     kEbusy = 16,
     kEexist = 17,
     kEnodev = 19,
+    kEnotdir = 20,
+    kEisdir = 21,
     kEinval = 22,
     kEnfile = 23,
     kEmfile = 24,
+    kEnotty = 25,
     kEnospc = 28,
     kEpipe = 32,
     kErange = 34,
     kEnosys = 38,
+    kEopnotsupp = 95,
     kEtimedout = 110,
 };
 
@@ -116,7 +122,66 @@ enum LinuxOpenFlag : int {
     kOTrunc = 0x200,    // 01000
     kOAppend = 0x400,   // 02000
     kONonblock = 0x800, // 020000
+    kODirectory = 0x10000,
 };
+
+// mremap(2) flags (Linux x86_64 UAPI).
+enum LinuxMremapFlag : int {
+    kMremapMaymove = 1,
+    kMremapFixed = 2,
+    kMremapDontunmap = 4,
+};
+
+// madvise(2) advice values (Linux x86_64 UAPI).
+enum LinuxMadvise : int {
+    kMadvNormal = 0,
+    kMadvRandom = 1,
+    kMadvSequential = 2,
+    kMadvWillneed = 3,
+    kMadvDontneed = 4,
+    kMadvFree = 8,
+    kMadvDontfork = 10,
+    kMadvDontdump = 16,
+    kMadvDodump = 17,
+};
+
+// flock(2) operations.
+enum LinuxFlockOp : int {
+    kFlockSh = 1,
+    kFlockEx = 2,
+    kFlockNb = 4,
+    kFlockUn = 8,
+};
+
+// personality(2) and arch_prctl(2) values.
+enum LinuxPersonality : int {
+    kPerLinux = 0,
+};
+
+enum LinuxArchPrctl : int {
+    kArchSetGs = 0x1001,
+    kArchSetFs = 0x1002,
+    kArchGetFs = 0x1003,
+    kArchGetGs = 0x1004,
+};
+
+// poll(2) event bits and memfd flags.
+enum LinuxPollBit : uint32_t {
+    kPollIn = 0x1,
+    kPollOut = 0x4,
+    kPollErr = 0x8,
+    kPollHup = 0x10,
+    kPollNval = 0x20,
+};
+
+enum LinuxMemfdFlag : int {
+    kMemfdCloexec = 0x1,
+    kMemfdAllowSealing = 0x2,
+};
+
+// ioctl(2) requests supported by the guest fd table.
+constexpr unsigned long kFionread = 0x541B;
+constexpr unsigned long kTiocgwinsz = 0x5413;
 
 // openat/newfstatat/unlinkat dirfd special values and flags (Linux x86_64 UAPI).
 enum LinuxAtFlag : int {

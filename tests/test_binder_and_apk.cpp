@@ -306,6 +306,139 @@ PS5DROID_TEST(apk_inspection_basic) {
     ps5droid::platform::remove_file(path);
 }
 
+PS5DROID_TEST(apk_inspection_deflated_manifest) {
+    // AndroidManifest.xml compressed with a DYNAMIC Huffman block (zlib
+    // level 6, wbits=-15). Real APKs use this block type; v1.0.5 could not
+    // read them.
+    static const uint8_t kCompressedManifest[] = {
+        237, 150, 193, 74,  195, 64,  16,  134, 255, 164, 105, 154, 26,  67,  114, 168, 32,  212,
+        139, 224, 81,  115, 19,  189, 10,  22,  17,  164, 136, 22,  15,  222, 214, 100, 45,  75,
+        154, 100, 201, 70,  161, 120, 237, 51,  120, 243, 89,  117, 182, 93,  105, 136, 250, 2,
+        146, 9,   31,  187, 204, 254, 255, 36,  153, 203, 108, 15,  30,  194, 33,  96,  225, 0,
+        190, 5,   4,   48,  65,  251, 91,  108, 195, 39,  246, 136, 99,  226, 140, 184, 34,  30,
+        9,   78,  40,  226, 141, 88,  17,  239, 196, 7,   225, 121, 57,  43,  196, 51,  87,  53,
+        6,   3,   201, 146, 140, 205, 57,  70,  163, 178, 154, 199, 82,  157, 166, 85,  41,  210,
+        56,  93,  22,  44,  23,  9,   105, 95,  20,  87,  39,  42,  205, 16,  4,   185, 40,  238,
+        211, 236, 129, 87,  74,  148, 5,   162, 168, 102, 213, 156, 215, 141, 148, 231, 177, 164,
+        22,  175, 162, 94,  194, 247, 153, 148, 11,  145, 176, 90,  31,  244, 251, 11,  246, 196,
+        23,  112, 221, 203, 101, 113, 33,  37,  194, 112, 93,  87,  242, 42,  23,  106, 237, 117,
+        28,  122, 35,  199, 120, 204, 138, 205, 39,  108, 207, 226, 235, 233, 108, 114, 55,  157,
+        204, 96,  91,  17,  206, 55,  29,  192, 167, 9,   221, 130, 17,  61,  150, 105, 135, 206,
+        233, 189, 173, 127, 21,  232, 233, 85,  251, 110, 90,  190, 158, 241, 217, 13,  159, 99,
+        86,  242, 69,  251, 102, 223, 111, 228, 14,  77,  173, 163, 86,  45,  215, 212, 250, 142,
+        78,  211, 105, 58,  77,  167, 233, 52,  157, 230, 63,  107, 218, 179, 120, 128, 159, 179,
+        152, 230, 38,  232, 22,  179, 158, 197, 195, 63,  124, 59,  191, 248, 244, 181, 102, 215,
+        248, 244, 250, 5};
+    const uint32_t kUncompressedSize = 2319;
+
+    CHECK_MSG(((kCompressedManifest[0] >> 1) & 3) == 2, "fixture must use a dynamic Huffman block");
+
+    std::vector<uint8_t> zip;
+    auto push16 = [&](uint16_t v) {
+        zip.push_back(static_cast<uint8_t>(v & 0xFF));
+        zip.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
+    };
+    auto push32 = [&](uint32_t v) {
+        zip.push_back(static_cast<uint8_t>(v & 0xFF));
+        zip.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
+        zip.push_back(static_cast<uint8_t>((v >> 16) & 0xFF));
+        zip.push_back(static_cast<uint8_t>((v >> 24) & 0xFF));
+    };
+
+    push32(0x04034b50);
+    push16(20);
+    push16(0);
+    push16(8); // DEFLATE
+    push16(0);
+    push16(0);
+    push32(0);
+    push32(static_cast<uint32_t>(sizeof(kCompressedManifest)));
+    push32(kUncompressedSize);
+    const std::string fn = "AndroidManifest.xml";
+    push16(static_cast<uint16_t>(fn.size()));
+    push16(0);
+    zip.insert(zip.end(), fn.begin(), fn.end());
+    zip.insert(zip.end(), kCompressedManifest, kCompressedManifest + sizeof(kCompressedManifest));
+
+    const std::string dex = "classes.dex";
+    const std::string dex_data = "dex\n035\0";
+    push32(0x04034b50);
+    push16(20);
+    push16(0);
+    push16(0);
+    push16(0);
+    push16(0);
+    push32(0);
+    push32(static_cast<uint32_t>(dex_data.size()));
+    push32(static_cast<uint32_t>(dex_data.size()));
+    push16(static_cast<uint16_t>(dex.size()));
+    push16(0);
+    zip.insert(zip.end(), dex.begin(), dex.end());
+    zip.insert(zip.end(), dex_data.begin(), dex_data.end());
+
+    std::string path = "test_dynamic_manifest.apk";
+    CHECK_MSG(ps5droid::platform::write_file(path, zip.data(), zip.size()), "fixture write failed");
+
+    ApkInspection apk = inspect_apk(path);
+    CHECK_MSG(apk.is_apk, "APK detection failed");
+    CHECK_MSG(apk.has_manifest, "manifest entry must be detected");
+    CHECK_MSG(apk.has_classes_dex, "classes.dex must be detected");
+    CHECK_MSG(apk.package_name == "org.ps5droid.dynamic", "dynamic manifest package mismatch");
+    CHECK_MSG(apk.min_sdk_version == 24, "dynamic manifest minSdk mismatch");
+    CHECK_MSG(apk.target_sdk_version == 33, "dynamic manifest targetSdk mismatch");
+    CHECK_MSG(apk.activity_count == 50, "dynamic manifest activity count mismatch");
+    CHECK_MSG(apk.app_label == "DynApp", "dynamic manifest label mismatch");
+    CHECK_MSG(apk.permissions.size() == 1 && apk.permissions[0] == "android.permission.INTERNET",
+              "dynamic manifest permission mismatch");
+    CHECK_MSG(apk.package_note.find("parsed binary AXML") != std::string::npos,
+              "package note must report AXML success");
+
+    ps5droid::platform::remove_file(path);
+}
+
+PS5DROID_TEST(deflate_dynamic_huffman_block) {
+    // Raw DEFLATE stream produced by zlib level 6 (wbits=-15) for the
+    // payload reconstructed below. Its first block is BTYPE=2 (dynamic
+    // Huffman), which the v1.0.5 decoder rejected.
+    static const uint8_t kDynamic[] = {
+        237, 214, 61,  14,  130, 64,  16,  134, 225, 171, 16,  122, 151, 202, 198, 172, 116,
+        20,  22,  82,  24,  46,  48,  129, 149, 76,  12,  11,  97,  209, 132, 219, 75,  252,
+        137, 71,  96,  13,  111, 253, 204, 219, 78,  62,  219, 137, 215, 171, 11,  83,  50,
+        72,  125, 147, 214, 29,  211, 126, 108, 205, 16,  246, 205, 216, 107, 99,  154, 217,
+        75,  167, 117, 154, 91,  169, 39,  125, 232, 52,  39,  226, 95,  116, 88,  96,  185,
+        62,  139, 250, 52,  131, 97,  24,  254, 67,  190, 7,   23,  118, 131, 27,  59,  13,
+        65,  123, 159, 188, 245, 115, 107, 126, 96,  78,  101, 85,  92,  202, 162, 34,  34,
+        34,  218, 84,  148, 125, 87,  82,  110, 217, 75,  48,  12,  111, 150, 35,  127, 213,
+        68,  68,  68,  236, 37,  24,  134, 225, 213, 57,  242, 87,  77,  68,  68,  196, 94,
+        130, 97,  24,  94,  157, 35,  127, 213, 68,  68,  68,  209, 236, 165, 39};
+
+    std::string payload;
+    const std::string manifest = "<manifest package=\"org.ps5droid.dynamic\">";
+    const std::string activity = "<activity android:name=\"Main\"/>";
+    const std::string permission = "<uses-permission name=\"android.permission.INTERNET\"/>";
+    for (int i = 0; i < 4; ++i) {
+        payload += manifest;
+        for (int j = 0; j < 40; ++j)
+            payload += activity;
+        for (int j = 0; j < 20; ++j)
+            payload += permission;
+        payload += "</manifest>";
+    }
+
+    CHECK_MSG(((kDynamic[0] >> 1) & 3) == 2, "test vector must be a dynamic block");
+
+    std::vector<uint8_t> out;
+    CHECK_MSG(inflate_deflate(kDynamic, sizeof(kDynamic), &out, payload.size()),
+              "dynamic Huffman inflate failed");
+    CHECK_MSG(out.size() == payload.size(), "inflated size mismatch");
+    CHECK_MSG(memcmp(out.data(), payload.data(), payload.size()) == 0, "inflated bytes mismatch");
+
+    // Truncated input must fail cleanly instead of reading past the buffer.
+    std::vector<uint8_t> truncated;
+    CHECK_MSG(!inflate_deflate(kDynamic, 40, &truncated, payload.size()),
+              "truncated dynamic stream must be rejected");
+}
+
 PS5DROID_TEST(build_prop_parsing) {
     std::string content = "# Android build properties\n"
                           "ro.build.version.release=11\n"

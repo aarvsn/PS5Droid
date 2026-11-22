@@ -112,5 +112,11 @@ struct BuildProp {
 
 BuildProp parse_build_prop(const std::string& text);
 
+// Inflates a raw DEFLATE stream (the payload of a ZIP method-8 entry).
+// Supports STORED, FIXED and DYNAMIC Huffman blocks. Exposed so the APK
+// inspector and the unit tests exercise the same decoder.
+bool inflate_deflate(const uint8_t* in, size_t in_size, std::vector<uint8_t>* out,
+                     size_t expected_out_size = 0);
+
 } // namespace android
 } // namespace ps5droid

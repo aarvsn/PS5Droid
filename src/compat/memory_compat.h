@@ -48,6 +48,14 @@ class CompatMemory {
     // Linux mprotect: R/W honored; PROT_EXEC recorded but not granted.
     MapResult mprotect(uintptr_t address, size_t length, int prot);
 
+    // Linux mremap: in-place shrink and MREMAP_MAYMOVE grow of a tracked
+    // anonymous mapping. MREMAP_FIXED / MREMAP_DONTUNMAP are refused.
+    MapResult mremap(uintptr_t address, size_t old_length, size_t new_length, int flags);
+
+    // Linux madvise over tracked anonymous private memory. MADV_DONTNEED
+    // zeroes the range; other accepted advice values are documented no-ops.
+    MapResult madvise(uintptr_t address, size_t length, int advice);
+
     // Linux brk: brk(0) -> current break; brk(addr) -> new break or the
     // unchanged current break when the request cannot be honored.
     BrkResult brk(uintptr_t request);
@@ -67,7 +75,6 @@ class CompatMemory {
         size_t size;
         int prot;
     };
-
     bool commit_pages(uintptr_t addr, size_t len);
 
     // Heap (brk) arena

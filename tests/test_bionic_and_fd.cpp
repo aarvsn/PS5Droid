@@ -112,7 +112,7 @@ PS5DROID_TEST(fd_table_fcntl_and_flags) {
 }
 
 PS5DROID_TEST(bionic_loader_hdr_and_stack) {
-    // Construct fake ELF64 header
+    // Construct fake ELF64 header with one PT_LOAD covering the headers.
     uint8_t elf_bytes[128] = {0};
     elf_bytes[0] = 0x7f;
     elf_bytes[1] = 'E';
@@ -121,9 +121,53 @@ PS5DROID_TEST(bionic_loader_hdr_and_stack) {
     elf_bytes[4] = 2;   // 64-bit
     elf_bytes[18] = 62; // x86_64
 
+    // e_phoff = 64, e_phentsize = 56, e_phnum = 1
+    uint64_t phoff = 64;
+    memcpy(elf_bytes + 32, &phoff, sizeof(phoff));
+    uint16_t phentsize = 56;
+    memcpy(elf_bytes + 54, &phentsize, sizeof(phentsize));
+    uint16_t phnum = 1;
+    memcpy(elf_bytes + 56, &phnum, sizeof(phnum));
+
+    // RawElf64Phdr at offset 64: PT_LOAD, offset 0, vaddr 0x400000, filesz 200
+    uint8_t* ph = elf_bytes + 64;
+    uint32_t p_type = 1;
+    uint32_t p_flags = 5;
+    uint64_t p_offset = 0;
+    uint64_t p_vaddr = 0x400000;
+    uint64_t p_filesz = 200;
+    memcpy(ph + 0, &p_type, sizeof(p_type));
+    memcpy(ph + 4, &p_flags, sizeof(p_flags));
+    memcpy(ph + 8, &p_offset, sizeof(p_offset));
+    memcpy(ph + 16, &p_vaddr, sizeof(p_vaddr));
+    memcpy(ph + 32, &p_filesz, sizeof(p_filesz));
+
     BionicElfInfo info = BionicLoader::parse_header(elf_bytes, sizeof(elf_bytes));
     CHECK_MSG(info.valid, "ELF header parse failed");
+    CHECK_MSG(info.phdr_addr == 0x400000 + 64, "AT_PHDR address must come from PT_LOAD");
 
-    auto stack = BionicLoader::setup_initial_stack(info, {"app"}, {"ENV=1"});
+    const uint64_t base = 0x1000;
+    auto stack = BionicLoader::setup_initial_stack(info, {"app", "--flag"}, {"ENV=1"}, base);
     CHECK_MSG(!stack.empty(), "stack setup failed");
+
+    const uint64_t* words = reinterpret_cast<const uint64_t*>(stack.data());
+    CHECK_MSG(words[0] == 2, "argc must be 2");
+
+    auto string_at = [&](uint64_t pointer) -> const char* {
+        if (pointer < base || pointer - base >= stack.size())
+            return nullptr;
+        return reinterpret_cast<const char*>(stack.data() + (pointer - base));
+    };
+    CHECK_MSG(string_at(words[1]) != nullptr && strcmp(string_at(words[1]), "app") == 0,
+              "argv[0] must point at real bytes");
+    CHECK_MSG(string_at(words[2]) != nullptr && strcmp(string_at(words[2]), "--flag") == 0,
+              "argv[1] must point at real bytes");
+    CHECK_MSG(words[3] == 0, "argv must be NULL-terminated");
+    CHECK_MSG(string_at(words[4]) != nullptr && strcmp(string_at(words[4]), "ENV=1") == 0,
+              "envp[0] must point at real bytes");
+    CHECK_MSG(words[5] == 0, "envp must be NULL-terminated");
+
+    // auxv starts after envp; AT_PHDR must carry the derived address.
+    CHECK_MSG(words[6] == 3, "AT_PHDR must be the first auxv entry");
+    CHECK_MSG(words[7] == 0x400000 + 64, "AT_PHDR value must match phdr_addr");
 }

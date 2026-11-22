@@ -171,7 +171,7 @@ PS5DROID_TEST(write_passthrough) {
 PS5DROID_TEST(honest_enosys_for_blockers) {
     CompatMemory mem;
     SyscallDispatch d(&mem);
-    const int blocked[] = {kClone, kFork, kExecve, kSocket, kChdir};
+    const int blocked[] = {kClone, kFork, kExecve, kSocket, kRtSigaction};
     for (int nr : blocked) {
         SyscallArgs a{};
         DispatchResult r = d.invoke(nr, a);

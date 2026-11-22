@@ -4,6 +4,71 @@ All notable changes to PS5Droid are documented here. The project follows
 its honesty policy (docs/development.md, section 6): nothing in these
 notes claims console execution that has not happened.
 
+## [1.0.6] - 2026-11-21
+
+### Added (Linux ABI surface, +15 syscalls)
+
+The emulated surface grew from 46 to 57 syscalls, partial support from 4
+to 8, and unsupported entries fell from 30 to 15 (80 tracked total):
+
+* **Emulated:** `madvise`, `chdir`, `personality`, `sched_setaffinity`,
+  `sched_getaffinity`, `set_robust_list`, `wait4`, `exit`, `flock`,
+  `getdents64`, `memfd_create`.
+* **Partial:** `mremap` (in-place shrink and `MREMAP_MAYMOVE` grow),
+  `arch_prctl` (FS/GS values recorded; no real TLS switch), `ioctl`
+  (`FIONREAD` only), `ppoll` (no signal-mask semantics).
+
+### Added (Memory compatibility)
+
+* **`mremap`** supports in-place shrink, `MREMAP_MAYMOVE` grow with
+  content preservation, and rejects non-movable growth with `ENOMEM`.
+* **`madvise`** accepts `MADV_NORMAL`/`MADV_DONTNEED`; `MADV_DONTNEED`
+  zeroes anonymous private pages. Unknown advice returns `EINVAL`.
+
+### Added (Guest fd table)
+
+* **Directory streams (`getdents64`)** over the guest fd table, including
+  `.`/`..`, `O_DIRECTORY` enforcement, and EOF reporting.
+* **`flock`** advisory locks with shared/exclusive/`LOCK_NB` semantics,
+  per-path ownership, and automatic release on close.
+* **`memfd_create`** with `MFD_CLOEXEC`/`MFD_ALLOW_SEALING` flag
+  validation and full read/write/seek/fstat behavior.
+* **`ppoll`/`poll`** readiness reporting for pipes, eventfds, and
+  `POLLNVAL` for closed descriptors.
+* **`FIONREAD` ioctl** on file and memory-backed descriptors.
+
+### Added (Guest filesystem view)
+
+* **Tracked guest cwd.** `chdir` updates a normalized guest cwd, and
+  relative `open`, `openat`, `stat`, `newfstatat`, `access`, `mkdir`,
+  `unlink`, `readlink`, and `unlinkat` resolve against it.
+
+### Fixed (APK inspection)
+
+* **Dynamic-Huffman DEFLATE blocks.** The ZIP inflater now builds
+  canonical Huffman trees for the code-length, literal/length, and
+  distance alphabets, so real-world `AndroidManifest.xml` entries that
+  zlib emits as `BTYPE=2` are decoded. STORED and fixed-Huffman remain
+  supported; truncated/oversubscribed streams fail cleanly.
+
+### Fixed (Bionic loader)
+
+* **Initial stack layout.** `setup_initial_stack` now emits a real Linux
+  x86_64 stack: argc, argv/envp pointers into the same buffer, NULL
+  terminators, and auxv. `AT_PHDR` is derived from the `PT_LOAD` segment
+  covering `e_phoff` instead of the hardcoded `0x400000`.
+
+### Changed (tests / docs / project)
+
+* Added `tests/test_compat_debt.cpp` (mremap/madvise, chdir, personality,
+  arch_prctl, affinity, flock, memfd, getdents64, ppoll) plus
+  dynamic-Huffman DEFLATE and dynamic-AXML APK tests and a real-stack
+  bionic test. 80/80 tests pass on host.
+* Compatibility counts are pinned by
+  `matrix_counts_match_v1_0_6_release`; README, architecture, and
+  platform-constraints docs now report 57/8/15.
+* Version bumped to 1.0.6.
+
 ## [1.0.5] - 2026-10-22
 
 ### Added (Linux ABI surface, +4 syscalls)
